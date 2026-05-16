@@ -329,3 +329,66 @@ OTA 最容易踩的点：
 3. 对比普通扫描和 batch scan：分别从 `ScanManager.startRegularScan()` 与 `startBatchScan()` 往 JNI 查。
 4. 设计一个 OTA 分包策略：MTU 为 247、每包 payload 244 字节时，如何等待 ack、如何超时重试、如何恢复断点。
 
+### 12.1 参考答案与讨论
+
+练习 1：GATT connect 主链路应能从 Java 追到 stack。
+
+推荐执行：
+
+```bash
+rg -n "clientConnect\\(|gattClientConnectNative|btif_gattc_open|BTA_GATTC_Open|GATT_Connect" android system
+```
+
+预期路线：
+
+- `GattService.clientConnect(...)`：校验 client 是否注册、取连接参数。
+- `GattNativeInterface.gattClientConnect(...)`：收敛 Java 参数并调 native。
+- `com_android_bluetooth_gatt.cpp:gattClientConnectNative(...)`：转换地址和参数，调用 GATT client interface。
+- `system/btif/src/btif_gatt_client.cc:btif_gattc_open(...)`：BTIF GATT Client 入口。
+- `BTA_GATTC_Open(...)`：BTA GATT Client open。
+- `GATT_Connect(...)`：Stack 层真正建立 GATT 连接。
+
+讨论要点：`clientIf` 无效时卡在 Java/BTIF 前；地址类型、direct/autoConnect、transport/PHY 问题通常要继续看 BTIF/BTA/Stack。
+
+练习 2：写 characteristic 时要确认业务 UUID 和 ATT handle 对上。
+
+推荐检查：
+
+- `connId`：是否对应当前设备连接。
+- `handle`：是否来自本次服务发现结果。
+- `writeType`：是否符合业务协议，默认写和无响应写语义不同。
+- `authReq`：是否需要加密/配对。
+- characteristic UUID：业务层认为要写的 UUID 是否就是该 handle 对应的属性。
+
+讨论要点：GATT 底层读写只认 handle。上层看 UUID，底层看 handle，如果服务发现缓存过期或外设服务表变化，就可能写到错误属性。
+
+练习 3：普通扫描和 batch scan 分叉在 `ScanManager`。
+
+推荐执行：
+
+```bash
+rg -n "startRegularScan|startBatchScan|startScanNative|startBatchScan" android/app/src/com/android/bluetooth/le_scan android/app/jni/com_android_bluetooth_scan.cpp
+```
+
+对比：
+
+- 普通扫描：更适合实时回调，结果及时上报。
+- batch scan：适合低功耗批量收集，结果可能延迟上报。
+- 两者都会进入 `ScanNativeInterface` 和 scan JNI，但参数、回调和调度策略不同。
+
+讨论要点：用户说“扫不到”时要问清楚是完全无结果，还是 batch 延迟上报；也要检查 report delay、过滤条件和后台限制。
+
+练习 4：MTU 247 时常见 payload 是 244 字节，但策略不能只靠最大值。
+
+参考 OTA 策略：
+
+1. 连接后先发现服务，确认 OTA characteristic 和 notify/ack characteristic。
+2. 调 `configureMTU(247)`，等待 MTU 回调确认。
+3. 分包长度使用 `min(244, 外设声明最大包长)`，不要盲目固定 244。
+4. 每包带序号、偏移、CRC 或 hash 片段。
+5. 如果使用 `WRITE_TYPE_DEFAULT`，等待 write callback 后发下一包。
+6. 如果使用 `WRITE_TYPE_NO_RESPONSE`，按窗口限速，例如一次发 N 包后等待 notify ack。
+7. 超时未收到 ack 时重发当前窗口，连续失败则降低窗口或断开重连。
+8. 断点恢复时先读外设当前 offset，再从 offset 对应分包继续。
+
+讨论要点：吞吐最高不等于最稳定。车载 OTA 更看重可恢复和可验证，尤其要考虑外设 buffer 小、连接参数差、车辆环境干扰等情况。

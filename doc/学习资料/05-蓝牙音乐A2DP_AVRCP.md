@@ -320,3 +320,69 @@ JNI 中对音量做 7 bit 处理：
 - 用 `rg -n "sendVolumeChangedNative|setVolume\\(" android/app/src/com/android/bluetooth/avrcp android/app/jni/com_android_bluetooth_avrcp_target.cpp` 追绝对音量双向链路。
 - 对照车机需求，判断你的项目更常用 A2DP Source 还是 A2DP Sink，并列出对应源码入口。
 
+### 10.1 参考答案与讨论
+
+练习 1：A2DP 连接和播放开始是两段链路。
+
+推荐执行：
+
+```bash
+rg -n "btif_av_source_connect|BTA_AvOpen|BTA_AvStart" android system
+```
+
+连接段：
+
+- `A2dpService.connect(device)` 做策略检查。
+- `A2dpNativeInterface.connectA2dp(device)` 进入 JNI。
+- `com_android_bluetooth_a2dp.cpp:connectA2dpNative(...)` 调 `btif_av_source_connect(...)`。
+- `btif_av_source_connect(...)` 进入 BTIF AV，再通过队列和 BTA AV 发起连接。
+- BTA AV 继续做 SDP、AVDTP signaling、stream endpoint 协商。
+
+播放段：
+
+- 连接完成只是 A2DP Profile connected。
+- 真正有声音还要进入 started 状态，例如 AVDTP Start、audio feeding、codec 配置、audio HAL 数据流。
+- 所以 `BTA_AvOpen` 更偏连接，`BTA_AvStart` 更偏媒体启动。
+
+讨论要点：现场问题要先区分“连不上”和“已连但无声”。前者看 open/connect，后者看 start、active device、codec、audio route。
+
+练习 2：`MESSAGE_STACK_EVENT` 是 Native 事件回 Java 后进入状态机的关键消息。
+
+推荐执行：
+
+```bash
+rg -n "MESSAGE_STACK_EVENT|EVENT_TYPE_CONNECTION_STATE_CHANGED|EVENT_TYPE_AUDIO_STATE_CHANGED" android/app/src/com/android/bluetooth/a2dp/A2dpStateMachine.java
+```
+
+预期观察：
+
+- 连接状态事件会驱动 disconnected、connecting、connected、disconnecting 状态变化。
+- 音频状态事件会驱动 playing/not playing 等音频状态广播。
+- 状态机处理后通常会调用 service 更新 active device、广播 intent、更新 codec 信息。
+
+讨论要点：如果 Native callback 已经上来但 UI 状态没变，重点看状态机当前状态是否接受该事件，以及是否被忽略、延迟或判定为非法状态迁移。
+
+练习 3：绝对音量是 AVRCP 双向链路，不只是本地音量条。
+
+推荐执行：
+
+```bash
+rg -n "sendVolumeChangedNative|setVolume\\(" android/app/src/com/android/bluetooth/avrcp android/app/jni/com_android_bluetooth_avrcp_target.cpp
+```
+
+预期路线：
+
+- 本地音量变化时，Java AVRCP service 通过 native 通知远端。
+- 远端音量命令回来时，Native callback 进入 Java，再更新本地音量管理。
+- AVRCP 绝对音量常用范围是 0-127，系统音量需要做映射。
+
+讨论要点：音量不同步要看三件事：远端是否支持绝对音量、地址是否匹配当前 active device、音量映射是否正确。
+
+练习 4：车机更常见的是 A2DP Sink，但源码中 Source/Sink 都要看项目角色。
+
+判断方式：
+
+- 如果车机播放手机音乐，车机是 A2DP Sink，手机是 Source。入口偏 `android/app/src/com/android/bluetooth/a2dpsink` 和 `system/btif/src/btif_a2dp_sink.cc`。
+- 如果车机把音频发给蓝牙耳机/音箱，车机是 A2DP Source。入口偏 `android/app/src/com/android/bluetooth/a2dp`、`com_android_bluetooth_a2dp.cpp`、`btif_av_source_connect(...)`、`btif_a2dp_source.cc`。
+
+讨论要点：车载项目通常“手机音乐进车机”是主场景，但也可能支持后排耳机、蓝牙音箱等 Source 场景。排查前先确认车机角色，避免看错目录。

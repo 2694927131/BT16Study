@@ -300,3 +300,65 @@ AG 侧通常还要处理手机网络/电话状态、CLCC 响应、CIND 指示等
 - 用 `rg -n "current_calls_cb|callsetup_cb|callheld_cb" android/app/jni/com_android_bluetooth_hfpclient.cpp system/btif/src/btif_hf_client.cc` 追通话状态回调。
 - 对比 A2DP 的 `Started` 和 HFP 的 `SCO open`，解释为什么“Profile connected”不等于“声音一定通”。
 
+### 11.1 参考答案与讨论
+
+练习 1：SCO 打开链路从 Java audio 请求进入 HFP Client native。
+
+推荐执行：
+
+```bash
+rg -n "connectAudioNative|connect_audio|BTA_HfClientAudioOpen" android system
+```
+
+预期路线：
+
+- `HeadsetClientService.connectAudio(device)` 是 Java 侧入口。
+- `HeadsetClientNativeInterface.connectAudio(device)` 调 `connectAudioNative(...)`。
+- `com_android_bluetooth_hfpclient.cpp:connectAudioNative(...)` 调 HFP Client interface 的 `connect_audio(...)`。
+- `system/btif/src/btif_hf_client.cc` 处理 audio connecting 事件。
+- 更底层由 BTA HF Client 打开 SCO/eSCO。
+
+讨论要点：HFP connected 只说明 Service Level Connection 已建立，SCO open 才是语音链路真正打通。
+
+练习 2：电话动作都先被状态机校验。
+
+推荐执行：
+
+```bash
+rg -n "CONNECT_AUDIO|DIAL_NUMBER|ACCEPT_CALL|TERMINATE_CALL" android/app/src/com/android/bluetooth/hfpclient/HeadsetClientStateMachine.java
+```
+
+预期观察：
+
+- `CONNECT_AUDIO`：打开 SCO，通常要求当前设备已连接且状态允许。
+- `DIAL_NUMBER`：拨号前要检查是否已有活动通话、号码是否有效、SLC 是否可用。
+- `ACCEPT_CALL`：接听动作依赖当前 callsetup/call state。
+- `TERMINATE_CALL`：挂断动作要映射到当前通话对象和 AT command。
+
+讨论要点：UI 按钮无响应不一定是 Native 问题，也可能是状态机根据当前通话状态拒绝了操作。
+
+练习 3：通话状态回调从 BTIF/JNI 回到 Java。
+
+推荐执行：
+
+```bash
+rg -n "current_calls_cb|callsetup_cb|callheld_cb" android/app/jni/com_android_bluetooth_hfpclient.cpp system/btif/src/btif_hf_client.cc
+```
+
+预期路线：
+
+- 远端手机通过 HFP AT 状态通知通话状态。
+- BTIF HFP Client 收到后触发 callback。
+- JNI callback 转换为 Java `StackEvent`。
+- `HeadsetClientService.messageFromNative(...)` 把事件发给 `HeadsetClientStateMachine`。
+
+讨论要点：来电状态不同步时，要确认 Native 是否收到 callback、JNI 是否正确构造事件、Java 状态机是否消费。
+
+练习 4：Profile connected 只是控制通道，音频通道另算。
+
+对比：
+
+- A2DP connected：表示媒体 Profile 建链完成；有声还需要媒体 stream started、active device、codec、audio route 正常。
+- HFP connected：表示 HFP SLC 建立；有声还需要 SCO/eSCO open、音频路由、麦克风/扬声器链路正常。
+
+结论：任何“已连接但无声”的问题，都必须把控制连接和音频承载连接分开看。车机场景尤其要再加 active device 和 Audio Framework 路由检查。

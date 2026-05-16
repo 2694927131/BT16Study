@@ -263,3 +263,70 @@ sequenceDiagram
 - 用 `rg -n "do_in_main_thread" system/btif/src/bluetooth.cc` 看看哪些基础接口会被投递到 BTIF 主线程。
 - 试着解释 `([BII)Z`：`[` 是数组，`B` 是 byte，`I` 是 int，`Z` 是 boolean。
 
+### 11.1 参考答案与讨论
+
+练习 1：JNI 注册表的作用是把 Java native 方法名和 C++ 函数指针绑起来。
+
+推荐执行：
+
+```bash
+rg -n "const JNINativeMethod methods\\[\\]" android/app/jni
+```
+
+预期会看到多类 Profile 的注册表，例如 Adapter、A2DP、AVRCP、HFP Client、GATT、Scan。每条注册项通常包含三部分：
+
+- Java native 方法名，例如 `connectA2dpNative`。
+- JNI 签名，例如 `([B)Z`。
+- C++ 函数指针，例如 `(void*)connectA2dpNative`。
+
+讨论要点：如果 Java 报 native 方法找不到，优先检查类名、方法名、签名和注册函数是否一致。
+
+练习 2：A2DP 回调到 Java 依赖缓存的 Java 方法 ID。
+
+推荐执行：
+
+```bash
+rg -n "CallVoidMethod|method_" android/app/jni/com_android_bluetooth_a2dp.cpp
+```
+
+预期观察：
+
+- Native callback 收到连接状态、音频状态、codec 状态后，会通过 `CallVoidMethod(...)` 调回 Java。
+- Java 侧通常由 `A2dpNativeCallback` 或类似 callback 类转给 `A2dpService.messageFromNative(...)`。
+- 最终状态机消费事件并广播状态变化。
+
+讨论要点：如果 Native 日志有状态变化但 UI 没变，问题可能在 JNI callback、Java callback 对象、状态机消费或广播权限，而不一定在协议栈。
+
+练习 3：`do_in_main_thread` 表示“请求已收到，但真正执行被排队到 BT main thread”。
+
+推荐执行：
+
+```bash
+rg -n "do_in_main_thread" system/btif/src/bluetooth.cc
+```
+
+常见投递动作包括：
+
+- 获取/设置 adapter 属性。
+- 开始/取消扫描。
+- 创建/取消/删除 bond。
+- PIN/SSP reply。
+- 断开 ACL。
+
+讨论要点：排查时要区分“函数返回成功”和“任务执行成功”。投递成功只说明任务进入队列，真正结果要看后续 callback 和状态变化。
+
+练习 4：`([BII)Z` 的完整解释如下。
+
+- `(` 和 `)` 中间是参数列表。
+- `[` 表示数组。
+- `B` 表示 byte，所以 `[B` 是 `byte[]`。
+- `I` 表示 int，这里有两个 `I`，即两个 int 参数。
+- `Z` 表示 boolean 返回值。
+
+因此 `([BII)Z` 对应 Java 形态大致是：
+
+```java
+private native boolean someNative(byte[] address, int arg1, int arg2);
+```
+
+讨论要点：JNI 签名错误时，编译可能不报错，但运行注册或调用会失败。复杂对象签名要写完整类名，例如 `Ljava/lang/String;`。

@@ -268,3 +268,63 @@ flowchart LR
 - 用 `rg -n "BTA_DmSearch|BTM_StartInquiry"` 复现扫描在 Native 层的路线。
 - 打开 `system/gd/hal/hci_hal.h`，区分 event、ACL、SCO、ISO 四类 Controller 到 Host 的数据入口。
 
+### 10.1 参考答案与讨论
+
+练习 1：Native 栈启动不是单个函数，而是一串模块初始化。
+
+推荐执行：
+
+```bash
+rg -n "event_init_stack|_init\\(|init\\(" system/btif/src/stack_manager.cc system/btif system/bta system/stack
+```
+
+阅读顺序：
+
+- `stack_manager.cc` 负责拉起和关闭 native stack。
+- `event_init_stack(...)` 是启动过程的核心入口之一。
+- 启动过程会初始化 BTIF、BTA、BTM、L2CAP、SDP、GATT、HCI/GD 等模块。
+- 初始化完成后通过 `event_signal_stack_up(...)` 回到 JNI/上层。
+
+讨论要点：蓝牙“打开成功”必须等 stack up 事件回来。只看到 Java 发起 enable 不能证明底层已经 ready。
+
+练习 2：L2CAP 固定信道用于一些固定协议入口。
+
+推荐执行：
+
+```bash
+rg -n "L2CA_RegisterFixedChannel" system/stack system/bta system/btif
+```
+
+可能观察到的方向：
+
+- SMP 使用固定信道处理 BLE 配对。
+- ATT/GATT 使用固定信道处理 BLE attribute。
+- 其他固定信道可能和控制、安全或 LE 特性相关。
+
+讨论要点：L2CAP 是很多协议的承载层。GATT、SMP、AVDTP、RFCOMM 等问题继续往下查时，常会落到 L2CAP 连接、配置或拥塞。
+
+练习 3：Classic 扫描 native 路线通常从 BTIF DM 到 BTA/BTM。
+
+推荐执行：
+
+```bash
+rg -n "BTA_DmSearch|BTM_StartInquiry" system
+```
+
+预期路线：
+
+- `btif_dm_start_discovery()` 调 `BTA_DmSearch(...)`。
+- BTA DM 组织 discovery/search 状态。
+- 更底层进入 BTM inquiry。
+- controller 通过 HCI inquiry event 返回发现结果。
+
+讨论要点：如果 `BTA_DmSearch(...)` 已执行但无结果，要看 inquiry 是否真的发到 controller，以及 HCI event 是否回来。
+
+练习 4：HCI HAL 的四类入口对应四类蓝牙数据。
+
+- event：controller 发给 host 的事件，例如 command complete、connection complete、inquiry result。
+- ACL：大多数异步数据通道，A2DP、GATT、RFCOMM 上层最终都可能承载在 ACL 上。
+- SCO：传统电话语音链路。
+- ISO：LE Audio 等同步等时数据。
+
+讨论要点：抓 snoop 时要先知道问题属于哪类数据。A2DP 卡顿主要看 ACL/media，HFP 语音主要看 SCO/eSCO，LE Audio 则可能看 ISO。
