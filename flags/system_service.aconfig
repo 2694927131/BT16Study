@@ -1,0 +1,63 @@
+package: "com.android.bluetooth.flags"
+container: "com.android.bt"
+
+flag {
+    name: "only_broadcast_to_local_user"
+    namespace: "bluetooth"
+    description: "The bluetooth stack start and exist only for the current user. We should only restrict the intent to the current user"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+    bug: "435244086"
+}
+
+flag {
+    name: "graceful_disable_without_message"
+    namespace: "bluetooth"
+    description: "Handle disable requests gracefully without a delayed message"
+    bug: "431067156"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "system_server_messenger"
+    namespace: "bluetooth"
+    description: "Replace binder call to the system server with a Messenger to enforce thread safety"
+    bug: "321804999"
+}
+
+flag {
+    name: "user_restriction_refactor"
+    namespace: "bluetooth"
+    description: "Move user restriction to Kotlin and properly check before any attempt to start Bluetooth"
+    bug: "420992261"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "on_to_ble_on_via_off"
+    namespace: "bluetooth"
+    description: "When transitioning from ON to BLE_ON, go through OFF state completely to reset bluetooth state."
+    bug: "431079894"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "watch_device_override_airplane_mode"
+    namespace: "bluetooth"
+    description: "If there is a watch connected, keep Bluetooth on"
+    bug: "416092966"
+}
+
+flag {
+    name: "user_visible_on_user_starting"
+    namespace: "bluetooth"
+    description: "Check userVisible API to determine if user should startup bluetooth instance"
+    bug: "438756896"
+}

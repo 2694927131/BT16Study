@@ -1,0 +1,73 @@
+package: "com.android.bluetooth.flags"
+container: "com.android.bt"
+
+flag {
+    name: "handle_delivery_sending_failure_events"
+    namespace: "bluetooth"
+    description: "Handle DeliveryFailure and SendingFailure Event types of MAP-Event-Reports from the MNS."
+    bug: "317400386"
+}
+
+flag {
+    name: "use_entire_message_handle"
+    namespace: "bluetooth"
+    description: "Use entire message handle of messages pushed from MCE to MSE."
+    bug: "323382399"
+}
+
+flag {
+    name: "refactor_saving_messages_and_metadata"
+    namespace: "bluetooth"
+    description: "Refactor how MAP Client collects and saves a message and its metadata."
+    bug: "331478849"
+}
+
+flag {
+    name: "not_delete_locked_message"
+    namespace: "bluetooth"
+    description: "Do not delete messages if they are locked"
+    bug: "420362857"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "map_mime_multipart"
+    namespace: "bluetooth"
+    description: "double quote boundary when encoding header"
+    bug: "424374330"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "map_continue_operation"
+    namespace: "bluetooth"
+    description: "Continue operation for a put operation to handle large MMS."
+    bug: "422499403"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "map_client_check_access_permission"
+    namespace: "bluetooth"
+    description: "Check if message access permission is allowed before connecting"
+    bug: "428760494"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "ignore_message_sms_disallowed"
+    namespace: "bluetooth"
+    description: "Don't store message if SMS is disallowed for the current user"
+    bug: "429073340"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}

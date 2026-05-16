@@ -1,0 +1,73 @@
+package: "com.android.bluetooth.flags"
+container: "com.android.bt"
+
+flag {
+    name: "set_component_available_fix"
+    namespace: "bluetooth"
+    description: "Ensure the state in PackageManager has DISABLED to ENABLED to trigger PACKAGE_CHANGED"
+    bug: "391084450"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "fix_started_module_race"
+    is_exported: true
+    namespace: "bluetooth"
+    description: "Fix race in modifying and accessing started modules"
+    bug: "394488590"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "fix_unhandled_bqr_subevent"
+    namespace: "bluetooth"
+    description: "Fix Unhandled BQR subevent on bqr report"
+    bug: "397854116"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "same_handler_for_all_modules"
+    namespace: "bluetooth"
+    description: "Update all modules to use the same handler"
+    bug: "398195386"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "hci_instance_name_use_injected"
+    namespace: "bluetooth"
+    description: "Inject service manager bluetooth hci instance name"
+    bug: "413484664"
+}
+
+flag {
+    name: "add_profile_as_intent_extra"
+    is_exported: true
+    namespace: "bluetooth"
+    description: "Add Profile as intent extra"
+    bug: "419074085"
+}
+
+flag {
+    name: "add_bond_loss_reason"
+    namespace: "bluetooth"
+    description: "Add bond loss reason to ACTION_KEY_MISSING Intent"
+    bug: "421377117"
+}
+
+flag {
+    name: "key_missing_count_api"
+    is_exported: true
+    namespace: "bluetooth"
+    description: "Promote getKeyMissingCount as public API"
+    bug: "421357557"
+}

@@ -1,0 +1,56 @@
+package: "com.android.bluetooth.flags"
+container: "com.android.bt"
+
+flag {
+    name: "abs_volume_sdp_conflict"
+    namespace: "bluetooth"
+    description: "Check connection state after SDP discovery to prevent connection collision resulting in no absolute volume support"
+    bug: "336915955"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "get_all_element_attributes_empty"
+    namespace: "bluetooth"
+    description: "Return all attributes even if empty when requesting all attributes with GetElementAttributes"
+    bug: "362896963"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "avrcp_16_default"
+    namespace: "bluetooth"
+    description: "Set AVRCP 1.6 as default AVRCP version"
+    bug: "374271695"
+}
+
+flag {
+    name: "set_a2dp_active_device_through_adapter_service"
+    namespace: "bluetooth"
+    description: "Instead of calling A2dpService#setActiveDevice, call AdapterService#setActiveDevice"
+    bug: "419448067"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "implement_get_image_from_descriptor_for_cover_art"
+    namespace: "bluetooth"
+    description: "Implement getImage from descriptor for cover art in AVRCP for IOP, some devices request image not 200*200"
+    bug: "427472266"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "use_returned_absolute_volume"
+    namespace: "bluetooth"
+    description: "Use the volume returned in an accepted SetAbsoluteVolume command"
+    bug: "429364070"
+}
