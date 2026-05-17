@@ -780,3 +780,20 @@ auto service2 = service;  // 引用计数+1
 | 10 | system/bta/gatt/bta_gatts_act.cc | L100-150 | GATT Server处理 | Server端读写 |
 | 11 | system/stack/gatt/att_protocol.cc | L50-120 | ATT PDU构造 | 7种ATT消息 |
 | 12 | system/stack/gatt/gatt_attr.cc | L30-80 | GATT属性数据库 | 属性注册+查找 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 6个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 12个带逐行注释的代码片段 |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 3个 |
+| 4 | Java↔C++对照表 | ✅ 14项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 3个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 12项 |
+| 9 | 前置知识 | ✅ T01、T04、T06 |
+| 10 | 车载场景 | ✅ 车载BLE互联、GATT外设模式 |

@@ -1,18 +1,181 @@
-# T35 LE Audio详解
+# T35 LE Audio详解 (V2)
 
-> 学习日期：2026-05-16
-> 使用工具：Trae+DS-v4-pro
-> 关键收获：
-> 1. LE Audio是蓝牙5.2引入的全新音频架构，核心是**LC3编解码器**+**等时通道(ISO)**,彻底替换SBC+A2DP/ACL传统方案
-> 2. 等时通道分两类: **CIS**(Connected Isochronous Stream，单播)+**BIS**(Broadcast Isochronous Stream，Auracast广播)
-> 3. BAP通过**ASE**(Audio Stream Endpoint)状态机控制音频流,通过**PAC**(Published Audio Capabilities)发布设备能力
-> 4. LE Audio完整服务生态包括TMAP(角色定义)、CSIS(协调集)、HAS(助听器)、VCS(音量控制)、GMAP(游戏音频)
+> 学习日期：2026-05-17
+> V1→V2升级：Mermaid架构图 + 逐行注释代码 + C++知识卡片 + Java↔C++对照 + 问题排查SOP
+> 前置知识：T01（蓝牙整体架构）、T17（BLE GATT完整流程）
+> 优先级：P8 | 车载场景：双模共存、Auracast广播音频、后排娱乐无线耳机
 
 ---
 
-## 一、LE Audio vs 经典蓝牙音频
+## 📋 本章导读
 
-### 1.1 核心差异对比
+LE Audio是蓝牙5.2引入的**全新音频架构**，核心变革有三：
+
+1. **传输层**：ISO等时通道替代ACL → 延迟从100-200ms降至**20-40ms**
+2. **编解码**：LC3替代SBC → 同码率音质提升、7.5ms超低帧长
+3. **拓扑**：CIS单播 + BIS广播 → 从点对点扩展到**一对多Auracast**
+
+本章按 **协议栈→编解码→通道→BAP状态机→单播流程→Auracast→服务生态→车载场景** 逐层展开，每层均附真实源码行号。
+
+**阅读路径建议**：
+- 快速入门 → 🗺️架构全景图 + LE Audio vs Classic对比表
+- 深入机制 → 🔍代码导航表 → 📖核心流程详解
+- 车载实战 → 🐛问题排查SOP + 🛠️动手练习
+
+---
+
+## 🗺️ 架构全景图
+
+### 1. LE Audio协议栈 (graph TD)
+
+```mermaid
+graph TD
+    subgraph Framework["Java Framework"]
+        A1[BluetoothLeAudio.java]
+        A2[LeAudioService.java]
+        A3[LeAudioNativeInterface.java]
+    end
+
+    subgraph BTIF["BTIF层"]
+        B1[btif_le_audio.cc]
+        B2[btif_le_audio_broadcaster.cc]
+    end
+
+    subgraph BTA["BTA层"]
+        C1[LeAudioClient<br/>Unicast Client]
+        C2[LeAudioBroadcaster<br/>Auracast Source]
+        C3[LeAudioGroupStateMachine<br/>组状态机]
+        C4[CodecManager<br/>编解码器管理]
+        C5[LeAudioDevice/Group<br/>设备模型]
+    end
+
+    subgraph Services["配套服务"]
+        D1[CSIS<br/>协调集 bta/csis/]
+        D2[HAS<br/>助听器 bta/has/]
+        D3[VCS<br/>音量控制 bta/vc/]
+        D4[GMAP<br/>游戏音频 bta/gmap/]
+        D5[TMAS<br/>电话/媒体角色]
+    end
+
+    subgraph ISO["ISO传输层"]
+        E1[IsoManager<br/>btm_iso_impl.h]
+        E2[CIG → CIS<br/>单播等时通道]
+        E3[BIG → BIS<br/>广播等时通道]
+    end
+
+    subgraph HCI["GD HCI层"]
+        F1[le_iso_interface.h]
+        F2[LE ISO HCI Commands]
+    end
+
+    subgraph Controller["Controller"]
+        G1[LE Controller + LC3 HW]
+    end
+
+    A1 --> A2 --> A3
+    A3 --> B1
+    A1 --> B2
+    B1 --> C1
+    B2 --> C2
+    C1 --> C3
+    C1 --> C4
+    C1 --> C5
+    C1 --> D1
+    C1 --> D2
+    C1 --> D3
+    C1 --> D4
+    C1 --> D5
+    C3 --> E1
+    E1 --> E2
+    E1 --> E3
+    E1 --> F1
+    F1 --> F2
+    F2 --> G1
+```
+
+### 2. ISO通道类型 (graph LR)
+
+```mermaid
+graph LR
+    subgraph ISO["ISO等时通道"]
+        CIG["CIG<br/>Connected Isochronous Group"]
+        BIG["BIG<br/>Broadcast Isochronous Group"]
+    end
+
+    CIG --> CIS1["CIS #1<br/>左耳 Sink方向"]
+    CIG --> CIS2["CIS #2<br/>右耳 Sink方向"]
+    CIG --> CIS3["CIS #3<br/>麦克风 Source方向"]
+
+    BIG --> BIS1["BIS #1<br/>立体声左"]
+    BIG --> BIS2["BIS #2<br/>立体声右"]
+    BIG --> BIS3["BIS #3<br/>多语言轨道"]
+
+    CIS1 -.->|点对点| EarL["左耳机"]
+    CIS2 -.->|点对点| EarR["右耳机"]
+    CIS3 -.->|点对点| Mic["麦克风"]
+
+    BIS1 -.->|一对多| Rx1["接收者A"]
+    BIS2 -.->|一对多| Rx2["接收者B"]
+    BIS3 -.->|一对多| Rx3["接收者C...∞"]
+```
+
+### 3. ASE状态机 (stateDiagram-v2)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+
+    Idle --> CodecConfigured : ASE CP: Codec Config
+    CodecConfigured --> QosConfigured : ASE CP: QoS Config
+    QosConfigured --> Enabling : ASE CP: Enable\n(CIG Create + CIS Establish)
+
+    Enabling --> Streaming : Receiver Start Ready\n(ISO Data Path Setup)
+    Streaming --> Disabling : ASE CP: Disable
+
+    Disabling --> QosConfigured : Receiver Stop Ready
+    QosConfigured --> Releasing : ASE CP: Release
+    Enabling --> Releasing : ASE CP: Release
+    Streaming --> Releasing : ASE CP: Release
+
+    Releasing --> Idle : Release Complete\n(CIS Disconnect + CIG Remove)
+
+    note right of Idle : AseState::IDLE = 0x00
+    note right of CodecConfigured : AseState::CODEC_CONFIGURED = 0x01
+    note right of QosConfigured : AseState::QOS_CONFIGURED = 0x02
+    note right of Enabling : AseState::ENABLING = 0x03
+    note right of Streaming : AseState::STREAMING = 0x04
+    note right of Disabling : AseState::DISABLING = 0x05
+    note right of Releasing : AseState::RELEASING = 0x06
+```
+
+---
+
+## 🔍 代码导航表
+
+| 模块 | 核心文件 | 关键类/函数 | 源码入口 |
+|------|---------|------------|---------|
+| **BTIF接口** | btif_le_audio.cc | LeAudioClientInterfaceImpl | [btif_le_audio.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_le_audio.cc) |
+| **BTIF广播** | btif_le_audio_broadcaster.cc | LeAudioBroadcasterInterfaceImpl | [btif_le_audio_broadcaster.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_le_audio_broadcaster.cc) |
+| **BTA API** | bta_le_audio_api.h | LeAudioClient | [bta_le_audio_api.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/include/bta_le_audio_api.h) |
+| **BTA广播API** | bta_le_audio_broadcaster_api.h | LeAudioBroadcaster | [bta_le_audio_broadcaster_api.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/include/bta_le_audio_broadcaster_api.h) |
+| **Client实现** | client.cc | LeAudioClientImpl | [client.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/client.cc) |
+| **组状态机** | state_machine.h | LeAudioGroupStateMachine | [state_machine.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/state_machine.h) |
+| **编解码管理** | codec_manager.h | CodecManager | [codec_manager.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/codec_manager.h) |
+| **设备模型** | devices.h | LeAudioDevice / LeAudioDeviceGroup | [devices.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/devices.h) |
+| **类型定义** | le_audio_types.h | AseState / AudioContexts / BidirectionalPair | [le_audio_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h) |
+| **ISO管理** | btm_iso_api_types.h | cig_create_params / cis_establish_cmpl_evt | [btm_iso_api_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api_types.h) |
+| **广播实现** | broadcaster.cc | LeAudioBroadcasterImpl | [broadcaster.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/broadcaster/broadcaster.cc) |
+| **HAL接口** | bt_le_audio.h | LeAudioClientCallbacks / LeAudioClientInterface | [bt_le_audio.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/include/hardware/bt_le_audio.h) |
+| **CSIS** | csis_types.h | CSIS服务定义 | [csis_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/csis/csis_types.h) |
+| **VCS** | types.h (vc/) | VCS/VOCS/AICS服务定义 | [types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/vc/types.h) |
+| **GMAP** | gmap_server.cc | GMAS服务实现 | [gmap_server.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/gmap/gmap_server.cc) |
+| **Feature Flags** | leaudio.aconfig | 31个LE Audio特性开关 | [leaudio.aconfig](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/flags/leaudio.aconfig) |
+
+---
+
+## 📖 核心流程详解
+
+### 流程1：LE Audio vs 经典蓝牙音频 — 核心差异
 
 | 维度 | 经典蓝牙音频 (BR/EDR) | LE Audio (BLE) |
 |------|----------------------|----------------|
@@ -27,322 +190,188 @@
 | **设备角色** | Source/Sink | Unicast Server(耳机)/Client(手机) + Broadcast Source/Sink |
 | **上层协议** | AVDTP/AVCTP | **BAP** (Basic Audio Profile)直接 |
 
-### 1.2 LE Audio 协议栈完整架构
+### 流程2：LC3编解码器配置 — LTV编码体系
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  Application Framework                                    │
-│  BluetoothLeAudio.java (Framework API)                    │
-│  LeAudioService.java / LeAudioStateMachine.java           │
-├──────────────────────────────────────────────────────────┤
-│  BTIF Layer  (btif_le_audio.cc / .h)                     │
-│  btif_le_audio_get_interface()                            │
-├──────────────────────────────────────────────────────────┤
-│  BTA Layer   (bta_le_audio_api.h + client.cc)             │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ LeAudioClient (Unicast Client)                    │    │
-│  │ LeAudioBroadcaster (Auracast Source)              │    │
-│  │ LeAudioDevice / LeAudioDeviceGroup                │    │
-│  │ LeAudioGroupStateMachine                          │    │
-│  │ CodecManager                                      │    │
-│  ├──────────────────────────────────────────────────┤    │
-│  │ 支持服务:                                          │    │
-│  │  CSIS (Coordinated Set)   - bta/csis/             │    │
-│  │  HAS  (Hearing Access)    - bta/has/              │    │
-│  │  VCS  (Volume Control)    - bta/vc/               │    │
-│  │  GMAP (Gaming Audio)      - bta/gmap/             │    │
-│  │  TMAS (Telephony & Media) - bta/le_audio/         │    │
-│  └──────────────────────────────────────────────────┘    │
-├──────────────────────────────────────────────────────────┤
-│  ISO Manager  (btm_iso_api.h / btm_iso_impl.h)          │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ CIG (Connected Isochronous Group)                 │    │
-│  │  ├── CIS #1 (左声道)                               │    │
-│  │  └── CIS #2 (右声道)                               │    │
-│  │ BIG (Broadcast Isochronous Group)                 │    │
-│  │  ├── BIS #1 (立体声左)                             │    │
-│  │  └── BIS #2 (立体声右)                             │    │
-│  └──────────────────────────────────────────────────┘    │
-├──────────────────────────────────────────────────────────┤
-│  GD HCI  (le_iso_interface.h)                             │
-│  LE ISO HCI Commands + Events                              │
-├──────────────────────────────────────────────────────────┤
-│  Bluetooth LE Controller + LC3 Codec                     │
-└──────────────────────────────────────────────────────────┘
+[le_audio_types.h:L134-L215](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h#L134-L215) 定义了LC3全部配置参数：
+
+```cpp
+// ===== LTV Type 常量定义 (le_audio_types.h:L134-L139) =====
+constexpr uint8_t kLeAudioLtvTypeSamplingFreq = 0x01;            // LTV Type: 采样率
+constexpr uint8_t kLeAudioLtvTypeFrameDuration = 0x02;           // LTV Type: 帧时长
+constexpr uint8_t kLeAudioLtvTypeAudioChannelAllocation = 0x03;  // LTV Type: 通道分配
+constexpr uint8_t kLeAudioLtvTypeOctetsPerCodecFrame = 0x04;     // LTV Type: 每帧字节数
+constexpr uint8_t kLeAudioLtvTypeCodecFrameBlocksPerSdu = 0x05;  // LTV Type: 每SDU帧块数
+
+// ===== 采样率枚举 (le_audio_types.h:L142-L154) =====
+constexpr uint8_t kLeAudioSamplingFreq8000Hz = 0x01;   // 8kHz   - 语音窄带
+constexpr uint8_t kLeAudioSamplingFreq16000Hz = 0x03;  // 16kHz  - 语音宽带(HFP等价)
+constexpr uint8_t kLeAudioSamplingFreq24000Hz = 0x05;  // 24kHz  - 语音超宽带
+constexpr uint8_t kLeAudioSamplingFreq32000Hz = 0x06;  // 32kHz  - 中等音质
+constexpr uint8_t kLeAudioSamplingFreq44100Hz = 0x07;  // 44.1kHz - CD品质
+constexpr uint8_t kLeAudioSamplingFreq48000Hz = 0x08;  // 48kHz  - 高品质(车载推荐)
+
+// ===== 帧时长 (le_audio_types.h:L157-L158) =====
+constexpr uint8_t kLeAudioCodecFrameDur7500us = 0x00;  // 7.5ms帧 - 超低延迟
+constexpr uint8_t kLeAudioCodecFrameDur10000us = 0x01; // 10ms帧 - 高音质
+
+// ===== 每帧字节数 (le_audio_types.h:L208-L213) =====
+constexpr uint16_t kLeAudioCodecFrameLen30 = 30;   // 低码率语音
+constexpr uint16_t kLeAudioCodecFrameLen40 = 40;
+constexpr uint16_t kLeAudioCodecFrameLen60 = 60;
+constexpr uint16_t kLeAudioCodecFrameLen80 = 80;   // 中等码率
+constexpr uint16_t kLeAudioCodecFrameLen100 = 100;
+constexpr uint16_t kLeAudioCodecFrameLen120 = 120;  // 高码率音乐
 ```
 
-**核心源码文件**：
-
-| 文件 | 路径 |
-|------|------|
-| bta_le_audio_api.h (BTA API) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/include/bta_le_audio_api.h) |
-| le_audio_types.h (类型定义) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h) |
-| client.cc (Client实现) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/client.cc) |
-| state_machine.h (状态机) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/state_machine.h) |
-| codec_manager.h (编解码器) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/codec_manager.h) |
-| devices.h (设备模型) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/devices.h) |
-| btm_iso_api.h (ISO管理) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api.h) |
-| btm_iso_api_types.h (ISO类型) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api_types.h) |
-| bt_le_audio.h (HAL接口) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/include/hardware/bt_le_audio.h) |
-| broadcaster.cc (广播源) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/broadcaster/broadcaster.cc) |
-
----
-
-## 二、LC3 编解码器
-
-### 2.1 LC3概述
-
-LC3 (Low Complexity Communication Codec) 是LE Audio的**强制编解码器**，替代经典蓝牙的SBC。
-
-**LC3关键特性**：
-- 超低延迟：7.5ms / 10ms 帧时长
-- 高音质：相同码率下显著优于SBC
-- 低复杂度：设计用于DSP/硬件加速
-- 宽采样率：8kHz ~ 48kHz (可扩展至384kHz)
-
-### 2.2 LC3 配置参数 (LTV编码)
-
-[le_audio_types.h:L135-L158](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h#L135-L158) 定义了LC3的所有配置参数，采用**LTV (Length-Type-Value)** 编码格式：
+**LC3配置参数汇总表**：
 
 | LTV Type | 名称 | 说明 | 可选值 |
 |----------|------|------|--------|
-| `0x01` | **SamplingFreq** | 采样率 | 8000/11025/16000/22050/24000/32000/44100/48000/.../384000 Hz |
+| `0x01` | **SamplingFreq** | 采样率 | 8/11.025/16/22.05/24/32/44.1/48/88.2/96/176.4/192/384 kHz |
 | `0x02` | **FrameDuration** | 帧时长 | 7.5ms / 10ms |
 | `0x03` | **AudioChannelAllocation** | 音频通道位置 | 28个位置位图(FrontLeft/FrontRight/...) |
 | `0x04` | **OctetsPerCodecFrame** | 每帧字节数 | 26-155 (取决于采样率+帧长) |
 | `0x05` | **CodecFrameBlocksPerSdu** | 每SDU帧块数 | 1-16 (高采样率时多个LC3帧打包) |
 
-**扩展编解码器**：系统还支持`OPUS`和`OPUS_HI_RES` (通过Feature Flag `leaudio_add_opus_hi_res_codec_type` 控制)。
+**扩展编解码器**：系统还支持`OPUS`和`OPUS_HI_RES`（通过Feature Flag `leaudio_add_opus_hi_res_codec_type` 控制），厂商ID为`0x00E0`(Google)，编解码器ID为`0x0001`(Opus)。
 
-### 2.3 音频通道位置体系
+### 流程3：ISO等时通道 — CIG/BIG参数结构
 
-[le_audio_types.h:L161-L200](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h#L161-L200) 定义了28个音频位置，支持**真空间音频**：
-
-```
-0x00000001 FrontLeft      0x00000002 FrontRight     0x00000004 FrontCenter
-0x00000008 LFE1           0x00000010 BackLeft       0x00000020 BackRight
-0x00000040 FrontLeftCenter  0x00000080 FrontRightCenter 0x00000100 BackCenter
-0x00000200 LFE2           0x00000400 SideLeft       0x00000800 SideRight
-0x00001000 TopFrontLeft   0x00002000 TopFrontRight  0x00004000 TopFrontCenter
-0x00008000 TopCenter      0x00010000 TopBackLeft    0x00020000 TopBackRight
-0x00040000 TopSideLeft    0x00080000 TopSideRight   0x00100000 TopBackCenter
-... (共28个通道)
-```
-
-**车载场景意义**：支持5.1/7.1乃至全景声配置。28通道远超经典A2DP的2通道限制。
-
----
-
-## 三、等时通道 (Isochronous Channel) — 核心传输机制
-
-### 3.1 CIS (Connected Isochronous Stream) — 单播音频
-
-CIS是BLE 5.2引入的**面向连接**的等时通道，用于点对点音频传输。
-
-```
-CIG (Connected Isochronous Group)
-├── CIS #1: ACL Handle X + CIS Handle A (左耳机, Sink方向)
-│   └── iso_data_path (Input方向: 麦克风)
-│   └── iso_data_path (Output方向: 扬声器)
-├── CIS #2: ACL Handle Y + CIS Handle B (右耳机, Sink方向)
-│   └── iso_data_path (Output方向: 扬声器)
-└── ...
-
-CIG参数 [cig_create_params]:
-  - sdu_itv_mtos:     SDU间隔(手机→耳机), μs
-  - sdu_itv_stom:     SDU间隔(耳机→手机), μs
-  - sca:             时钟精度 (0-20ppm ~ 251-500ppm)
-  - packing:         顺序/交错
-  - framing:         非帧/帧模式
-  - max_trans_lat_*:  最大传输延迟
-  - cis_cfgs[]:      每个CIS的配置数组
-```
-
-**CIS建立完成的HCI事件** [cis_establish_cmpl_evt](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api_types.h#L109-L127)：
+[btm_iso_api_types.h:L74-L147](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api_types.h#L74-L147) 定义了ISO通道的核心数据结构：
 
 ```cpp
+// ===== CIG创建参数 (btm_iso_api_types.h:L74-L83) =====
+struct cig_create_params {
+  uint32_t sdu_itv_mtos;       // SDU间隔: 手机→耳机方向 (μs)
+  uint32_t sdu_itv_stom;       // SDU间隔: 耳机→手机方向 (μs)
+  uint8_t sca;                 // 时钟精度: 0=251-500ppm, 7=0-20ppm
+  uint8_t packing;             // 0=顺序(Sequential), 1=交错(Interleaved)
+  uint8_t framing;             // 0=非帧(Unframed), 1=帧(Framed)
+  uint16_t max_trans_lat_stom; // 最大传输延迟: 耳机→手机
+  uint16_t max_trans_lat_mtos; // 最大传输延迟: 手机→耳机
+  std::vector<EXT_CIS_CFG> cis_cfgs; // 💡C++: std::vector动态数组, Java用ArrayList<ExtCisCfg>
+};
+
+// ===== CIS建立完成事件 (btm_iso_api_types.h:L109-L127) =====
 struct cis_establish_cmpl_evt {
-  uint8_t  status;          // 0=成功
-  uint8_t  cig_id;          // CIG ID
-  uint16_t cis_conn_hdl;    // CIS连接句柄
+  uint8_t status;           // 0=成功, 非0=错误码
+  uint8_t cig_id;           // CIG标识符
+  uint16_t cis_conn_hdl;    // CIS连接句柄 (后续数据传输用)
   uint32_t cig_sync_delay;  // CIG同步延迟 (μs)
   uint32_t cis_sync_delay;  // CIS同步延迟 (μs)
-  uint32_t trans_lat_mtos;  // 传输延迟(手机→耳机)
-  uint32_t trans_lat_stom;  // 传输延迟(耳机→手机)
-  uint8_t  phy_mtos;        // PHY(1M/2M/Coded)
-  uint8_t  phy_stom;
-  uint16_t max_pdu_mtos;    // 最大PDU大小
-  uint16_t max_pdu_stom;
+  uint32_t trans_lat_mtos;  // 实际传输延迟: 手机→耳机
+  uint32_t trans_lat_stom;  // 实际传输延迟: 耳机→手机
+  uint8_t phy_mtos;         // 实际PHY: 1M/2M/Coded
+  uint8_t phy_stom;         // 实际PHY: 1M/2M/Coded
+  uint8_t nse;              // Number of Subevents
+  uint8_t bn_mtos;          // Burst Number: 手机→耳机
+  uint8_t bn_stom;          // Burst Number: 耳机→手机
+  uint8_t ft_mtos;          // Flush Timeout: 手机→耳机
+  uint8_t ft_stom;          // Flush Timeout: 耳机→手机
+  uint16_t max_pdu_mtos;    // 最大PDU: 手机→耳机
+  uint16_t max_pdu_stom;    // 最大PDU: 耳机→手机
   uint16_t iso_itv;         // ISO间隔 (μs)
 };
-```
 
-**编码格式标识** [btm_iso_api_types.h:L28-L29](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api_types.h#L28-L29)：
-
-```cpp
-constexpr uint8_t kIsoCodingFormatTransparent = 0x03;
-constexpr uint8_t kIsoCodingFormatLc3 = 0x06;        // LC3编码
-constexpr uint8_t kIsoCodingFormatVendorSpecific = 0xFF; // 厂商自定义
-```
-
-### 3.2 BIS (Broadcast Isochronous Stream) — Auracast广播音频
-
-BIS是BLE Audio的**广播**音频通道，支持**无限数量**的接收设备同时收听（如公共广播、电视音频共享）。
-
-```
-BIG (Broadcast Isochronous Group)
-├── BIS #1 (立体声左声道)
-├── BIS #2 (立体声右声道)
-├── BIS #3 (多语言轨道1)
-└── ...
-
-BIG参数 [big_create_params]:
-  - adv_handle:        广播句柄
-  - num_bis:          BIS数量 (1-31)
-  - sdu_itv:          SDU间隔 (μs)
-  - max_sdu_size:     最大SDU大小
-  - max_transport_latency: 最大传输延迟
-  - rtn:              重传次数
-  - phy:              PHY (1M/2M/Coded)
-  - packing:          顺序/交错
-  - framing:          非帧/帧模式
-  - enc:              加密 (0=无, 1=BIG_ENC)
-  - enc_code[16]:     Broadcast Code (16字节密钥)
-```
-
-**Auracast广播架构**：
-
-```
-  广播源 (Broadcast Source - 手机/车机)
-     │  EXT_ADV (周期性广播 + BIGInfo)
-     │  ┌────────────────────────────┐
-     ├──│ BIG (Broadcast Group)      │
-     │  │  ├─ BIS #1 (立体声左)      │
-     │  │  └─ BIS #2 (立体声右)      │
-     │  └────────────────────────────┘
-     │
-     ├────────────────────→  接收者A (耳机1)
-     ├────────────────────→  接收者B (耳机2)
-     ├────────────────────→  接收者C (助听器)
-     └────────────────────→  ... (无限数量!)
-```
-
-**广播元数据结构** [bta_le_audio_api.h]：
-
-```cpp
-struct BroadcastMetadata {
-  std::vector<uint8_t> broadcast_id;         // 广播唯一ID
-  std::string broadcast_name;                // 广播名称 (如"车机音乐")
-  LeAudioCodecConfig codec_config;           // 编解码器配置
-  LeAudioBroadcastSubgroup[] subgroups;      // 子组(每语言/声道一个)
+// ===== BIG创建参数 (btm_iso_api_types.h:L135-L147) =====
+struct big_create_params {
+  uint8_t adv_handle;       // 广播句柄 (关联周期性广播)
+  uint8_t num_bis;          // BIS数量 (1-31, 最多31个广播通道)
+  uint32_t sdu_itv;         // SDU间隔 (μs)
+  uint16_t max_sdu_size;    // 最大SDU大小
+  uint16_t max_transport_latency; // 最大传输延迟
+  uint8_t rtn;              // 重传次数 (Reliable: >0)
+  uint8_t phy;              // PHY: 1M/2M/Coded
+  uint8_t packing;          // 0=顺序, 1=交错
+  uint8_t framing;          // 0=非帧, 1=帧
+  uint8_t enc;              // 0=无加密, 1=BIG_ENC加密
+  std::array<uint8_t, 16> enc_code; // 💡C++: std::array固定大小数组, 比C数组多size()和边界检查; Java用byte[16]
 };
 
-struct BasicAudioAnnouncementData {
-  LeAudioCodecConfig[] codec_configs;        // 支持编解码器
-  AudioContextType[] available_contexts;      // 音频场景(游戏/电话/媒体)
-  uint8_t broadcast_id[3];                   // 广播ID
+// ===== ISO编码格式常量 (btm_iso_api_types.h:L28-L30) =====
+constexpr uint8_t kIsoCodingFormatTransparent = 0x03;        // 透明传输(原始PCM)
+constexpr uint8_t kIsoCodingFormatLc3 = 0x06;               // LC3编码 (LE Audio标准)
+constexpr uint8_t kIsoCodingFormatVendorSpecific = 0xFF;     // 厂商自定义编码
+```
+
+### 流程4：ASE状态机 — 音频流端点控制
+
+[le_audio_types.h:L382-L411](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h#L382-L411) 定义了ASE状态和CIS状态枚举：
+
+```cpp
+// ===== ASE状态枚举 (le_audio_types.h:L382-L390) =====
+// 严格遵循BAP规范定义的状态机
+enum class AseState : uint8_t {  // 💡C++: enum class强类型枚举+指定底层类型uint8_t, Java无此特性
+  BTA_LE_AUDIO_ASE_STATE_IDLE = 0x00,            // 空闲: 未配置
+  BTA_LE_AUDIO_ASE_STATE_CODEC_CONFIGURED = 0x01, // 编解码已配置
+  BTA_LE_AUDIO_ASE_STATE_QOS_CONFIGURED = 0x02,   // QoS已配置
+  BTA_LE_AUDIO_ASE_STATE_ENABLING = 0x03,         // 正在使能(CIS建立中)
+  BTA_LE_AUDIO_ASE_STATE_STREAMING = 0x04,        // 流传输中(音频数据流通)
+  BTA_LE_AUDIO_ASE_STATE_DISABLING = 0x05,        // 正在禁用
+  BTA_LE_AUDIO_ASE_STATE_RELEASING = 0x06,        // 正在释放(回到IDLE)
+};
+
+// ===== CIS状态枚举 (le_audio_types.h:L392-L398) =====
+// CIS连接生命周期, 与ASE状态配合使用
+enum class CisState {
+  IDLE,         // 未分配
+  ASSIGNED,     // 已分配给ASE (Codec Configured后)
+  CONNECTING,   // CIS建立中 (HCI LE Create CIS)
+  CONNECTED,    // CIS已建立 (cis_establish_cmpl_evt)
+  DISCONNECTING,// CIS断开中
+};
+
+// ===== 数据路径状态 (le_audio_types.h:L400-L405) =====
+enum class DataPathState {
+  IDLE,         // 未配置
+  CONFIGURING,  // 正在配置 (HCI Setup ISO Data Path)
+  CONFIGURED,   // 已配置 (数据流通)
+  REMOVING,     // 正在移除
+};
+
+// ===== CIG状态枚举 (le_audio_types.h:L379) =====
+enum class CigState : uint8_t {
+  NONE,          // 未创建
+  CREATING,      // CIG创建中 (HCI LE Set CIG Parameters)
+  CREATED,       // CIG已创建
+  REMOVING,      // CIG移除中
+  RECOVERING,    // CIG恢复中 (异常后重建)
+  RECONFIGURING, // CIG重配置中 (切换Context)
 };
 ```
 
----
+**LeAudioGroupStateMachine** 接口 ([state_machine.h:L50-L65](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/state_machine.h#L50-L65)) 驱动上述状态转换：
 
-## 四、BAP (Basic Audio Profile) 核心机制
-
-### 4.1 GATT服务体系
-
-LE Audio通过**GATT服务**来发现设备能力、建立音频流、控制音量等。
-
-**BAP核心GATT服务** [le_audio_types.h:L68-L112](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h#L68-L112)：
-
-| 服务 | UUID | 说明 |
-|------|------|------|
-| **Published Audio Capability (PAC)** | `0x1850` | 发布设备支持的音频能力 |
-| **Audio Stream Control (ASCS)** | `0x184E` | 控制音频流建立/配置/开始/停止 |
-| **Common Audio Service (CAS)** | `0x1853` | 公共音频服务（用于识别角色+包装CSIS） |
-| **Telephony & Media Audio (TMAS)** | `0x1855` | 电话和媒体音频角色 |
-| **Gaming Audio (GMAS)** | `0x1858` | 游戏音频角色 |
-
-**PAC特征**:
-
-| 特征 | UUID | 说明 |
-|------|------|------|
-| Sink PAC | `0x2BC9` | Sink端(耳机)发布的接收能力 |
-| Source PAC | `0x2BCB` | Source端(麦克风)发布的发送能力 |
-| Sink Audio Location | `0x2BCA` | 音频输出位置(左耳/右耳) |
-| Source Audio Location | `0x2BCC` | 音频输入位置 |
-
-**ASCS特征**:
-
-| 特征 | UUID | 说明 |
-|------|------|------|
-| Sink ASE | `0x2BC4` | Sink通道端点 (Notify) |
-| Source ASE | `0x2BC5` | Source通道端点 (Notify) |
-| ASE Control Point | `0x2BC6` | 控制点 (Write Command→Codec Config/QoS/Enable/Disable/Release) |
-
-**音频上下文特征**:
-
-| 特征 | UUID | 说明 |
-|------|------|------|
-| Available Contexts | `0x2BCD` | 当前可用的音频上下文 (Read+Notify) |
-| Supported Contexts | `0x2BCE` | 支持的音频上下文 (Read) |
-
-### 4.2 ASE (Audio Stream Endpoint) — 音频流端点
-
-ASE是BAP中控制单个音频通道的**状态机驱动单元**。
-
-**Audio Contexts (音频场景)**：
-
-| 场景 | 位 | 含义 |
-|------|----|------|
-| Unspecified | 0x0001 | 未指定 |
-| **Media** | 0x0002 | **媒体播放 (A2DP等价)** |
-| **Conversational** | 0x0004 | **通话 (HFP等价)** |
-| Game | 0x0008 | 游戏音频 |
-| Ringtone | 0x0010 | 铃声 |
-| Instructional | 0x0020 | 教学/导航 |
-| Live | 0x0040 | 现场音频 |
-| Sound Effects | 0x0080 | 音效 |
-| Notification | 0x0100 | 通知音 |
-| Alarm | 0x0200 | 闹钟 |
-| ...
-
-**车载关键场景**：`Media` (A2DP替代) + `Conversational` (HFP替代) + `Alarm` + `Notification`
-
-### 4.3 ASE状态转换流程
-
-```
-ASE建立音频流的典型状态转换：
-
-[IDLE]
-  │
-  ├── Client写入ASE ControlPoint: "Codec Config"
-  │   → ASE状态变为 [CODEC_CONFIGURED]
-  │
-  ├── Client写入ASE ControlPoint: "QoS Config"
-  │   → ASE状态变为 [QOS_CONFIGURED]
-  │
-  ├── Client调用Enable (CIG创建 + CIS建立)
-  │   → ASE状态变为 [ENABLING] → [STREAMING]
-  │
-  ├── 音频数据传输中...
-  │   (数据通过CIS等时通道传输)
-  │
-  ├── Client调用Disable
-  │   → ASE状态变为 [DISABLING] → [QOS_CONFIGURED]
-  │
-  └── Client写入"Release"
-      → ASE状态变为 [IDLE]
+```cpp
+// ===== 组状态机核心接口 (state_machine.h:L50-L65) =====
+class LeAudioGroupStateMachine {
+public:
+  // 将设备附加到已有音频流 (如TWS右耳加入已建立的左耳流)
+  virtual bool AttachToStream(LeAudioDeviceGroup* group,
+                              LeAudioDevice* leAudioDevice,
+                              types::BidirectionalPair<std::vector<uint8_t>> ccids) = 0;
+  // 启动音频流: 触发 CIG创建→CIS建立→ASE Enable→Streaming
+  virtual bool StartStream(LeAudioDeviceGroup* group,
+                           types::LeAudioContextType context_type,
+                           const types::BidirectionalPair<types::AudioContexts>&
+                               metadata_context_types,
+                           types::BidirectionalPair<std::vector<uint8_t>> ccid_lists) = 0;
+  // 暂停音频流: ASE Disable → CIS保留
+  virtual void SuspendStream(LeAudioDeviceGroup* group) = 0;
+  // 配置音频流: Codec Config + QoS Config (不建立CIS)
+  virtual bool ConfigureStream(LeAudioDeviceGroup* group,
+                               types::LeAudioContextType context_type, ...) = 0;
+  // 启用/禁用特定方向的流 (如只开麦克风方向)
+  virtual bool EnableStreamingDirection(LeAudioDeviceGroup* group,
+                                       uint8_t remote_direction) = 0;
+  virtual bool DisableStreamingDirection(LeAudioDeviceGroup* group,
+                                        uint8_t remote_direction) = 0;
+  // 停止音频流: ASE Release → CIS断开 → CIG移除
+  virtual void StopStream(LeAudioDeviceGroup* group) = 0;
+};
 ```
 
-**LeAudioGroupStateMachine** 接口定义了上述流程的核心操作：
-- [state_machine.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/state_machine.h#L50-L65)：
-  - `AttachToStream()` → ASE关联设备到流
-  - `ConfigureStream()` → Codec + QoS配置
-  - `StartStream()` → CIG创建 + CIS建立
-  - `SuspendStream()` / `StopStream()` → 暂停/停止
-  - `EnableStreamingDirection()` / `DisableStreamingDirection()` → 方向控制
-
-### 4.4 完整单播连接流程
+### 流程5：完整单播连接9步流程
 
 ```
 手机 (LE Audio Client/Initiator)        耳机 (LE Audio Server/Acceptor)
@@ -381,43 +410,86 @@ ASE建立音频流的典型状态转换：
 9. ★ 音频流传输中 ★
     │  LC3编码数据 → CIS → 耳机DAC
     │           ← 麦克风ADC ← CIS
-
-10. 停止流程
-    │  ── GATT Write: ASE CP "Disable" ──→
-    │  ── HCI Disconnect CIS ──→
-    │  ── HCI Remove CIG ──→
 ```
 
----
-
-## 五、Auracast 广播音频 — 一对多音频共享
-
-### 5.1 Auracast 概念
-
-**Auracast**是LE Audio的广播音频能力，允许一个发送源向无限个接收者广播音频。
-
-**与经典蓝牙广播的关键区别**：
-- 经典蓝牙：无广播音频能力，必须建立ACL连接
-- Auracast：无需配对、无需连接，BIS加密保护
-
-### 5.2 广播源架构
-
-`LeAudioBroadcaster` 类 ([bta_le_audio_broadcaster_api.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/include/bta_le_audio_broadcaster_api.h))：
+**LeAudioClient API调用链** ([bta_le_audio_api.h:L42-L80](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/include/bta_le_audio_api.h#L42-L80))：
 
 ```cpp
-class LeAudioBroadcaster {
-  // 创建广播
-  virtual void CreateAudioBroadcast(bool is_public, std::string broadcast_name,
-                                    LeAudioCodecConfig codec_config, ...) = 0;
-  // 开始广播
-  virtual void StartAudioBroadcast(uint32_t broadcast_id) = 0;
-  // 停止/更新/销毁
-  virtual void StopAudioBroadcast(uint32_t broadcast_id) = 0;
-  virtual void UpdateMetadata(uint32_t, std::string name, ...) = 0;
-  virtual void DestroyAudioBroadcast(uint32_t broadcast_id) = 0;
+// ===== LeAudioClient 单播客户端API (bta_le_audio_api.h:L38-L80) =====
+class LeAudioClient {
+public:
+  // 初始化: 注册回调+编解码器偏好
+  static void Initialize(
+      LeAudioClientCallbacks* callbacks,
+      base::Closure initCb,
+      base::Callback<bool()> hal_2_1_verifier,
+      const std::vector<btle_audio_codec_config_t>& offloading_preference);
 
-  // 获取广播元数据（供扫描者发现）
-  virtual BroadcastMetadata GetBroadcastMetadata(uint32_t broadcast_id) = 0;
+  // 设备连接/断开
+  virtual void Connect(const RawAddress& address) = 0;
+  virtual void Disconnect(const RawAddress& address) = 0;
+
+  // 组管理: 将设备加入/移出音频组
+  virtual void GroupAddNode(const int group_id, const RawAddress& addr) = 0;
+  virtual void GroupRemoveNode(const int group_id, const RawAddress& addr) = 0;
+
+  // 流控制: 启动/暂停/停止音频流
+  virtual void GroupStream(const int group_id, const uint16_t content_type) = 0;
+  virtual void GroupSuspend(const int group_id) = 0;
+  virtual void GroupStop(const int group_id) = 0;
+
+  // 设置活跃组 (同时只能有一个活跃组)
+  virtual void GroupSetActive(const int group_id) = 0;
+
+  // 编解码器偏好设置 (车载可设48kHz/10ms高音质)
+  virtual void SetCodecConfigPreference(
+      int group_id,
+      btle_audio_codec_config_t input_codec_config,
+      btle_audio_codec_config_t output_codec_config) = 0;
+
+  // 音频方向偏好 (LE Audio vs Classic选择)
+  virtual void SendAudioProfilePreferences(
+      const int group_id,
+      bool is_output_preference_le_audio,
+      bool is_duplex_preference_le_audio) = 0;
+};
+```
+
+### 流程6：Auracast广播音频 — LeAudioBroadcaster
+
+[bta_le_audio_broadcaster_api.h:L27-L63](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/include/bta_le_audio_broadcaster_api.h#L27-L63) 定义了广播源接口：
+
+```cpp
+// ===== LeAudioBroadcaster 广播源接口 (bta_le_audio_broadcaster_api.h:L27-L63) =====
+class LeAudioBroadcaster {
+public:
+  static constexpr uint8_t kInstanceIdUndefined = 0xFF; // 无效实例ID
+
+  // 创建广播: 设置名称/加密/元数据/子组质量
+  virtual void CreateAudioBroadcast(
+      bool is_public,                                    // 是否公开广播
+      const std::string& broadcast_name,                 // 广播名称 (如"车机音乐")
+      const std::optional<BroadcastCode>& broadcast_code,// 💡C++: std::optional表示值可能不存在, Java用@Nullable
+      const std::vector<uint8_t>& public_metadata,       // 公开元数据
+      const std::vector<uint8_t>& subgroup_quality,      // 子组音质配置
+      const std::vector<std::vector<uint8_t>>& subgroup_metadata) = 0; // 子组元数据
+
+  // 生命周期控制
+  virtual void StartAudioBroadcast(uint32_t broadcast_id) = 0;   // 开始广播
+  virtual void SuspendAudioBroadcast(uint32_t broadcast_id) = 0; // 暂停广播
+  virtual void StopAudioBroadcast(uint32_t broadcast_id) = 0;    // 停止广播
+  virtual void DestroyAudioBroadcast(uint32_t broadcast_id) = 0; // 销毁广播
+
+  // 元数据操作
+  virtual void GetBroadcastMetadata(uint32_t broadcast_id) = 0;  // 获取广播元数据
+  virtual void UpdateMetadata(uint32_t broadcast_id,
+                              const std::string& broadcast_name,
+                              const std::vector<uint8_t>& public_metadata,
+                              const std::vector<std::vector<uint8_t>>& subgroup_metadata) = 0;
+
+  // PHY设置 (2M推荐, 1M兼容)
+  virtual void SetStreamingPhy(uint8_t phy) = 0;
+  virtual uint8_t GetStreamingPhy(void) const = 0;
 };
 ```
 
@@ -430,223 +502,395 @@ BroadcastState枚举:
                                                          STOPPING → STOPPED
 ```
 
-### 5.3 车载Auracast应用场景
+### 流程7：AudioContexts — 音频场景位图操作
 
-| 场景 | 车机角色 | 说明 |
-|------|---------|------|
-| **车内多屏共享** | Broadcast Source | 前排导航语音/后排独立音频 |
-| **车外公共广播** | Broadcast Source | 露营模式对外广播音乐 |
-| **多乘客收听** | Broadcast Source | 多个乘客耳机同步收听同一音源 |
-| **接收外部广播** | Broadcast Sink | 车站/机场公告接收 |
+[le_audio_types.h:L427-L501](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h#L427-L501) 定义了音频上下文类型和位图操作：
+
+```cpp
+// ===== 音频上下文类型 (le_audio_types.h:L427-L442) =====
+enum class LeAudioContextType : uint16_t {
+  UNINITIALIZED = 0x0000,   // 未初始化
+  UNSPECIFIED = 0x0001,     // 未指定
+  CONVERSATIONAL = 0x0002,  // 通话 (HFP等价) ★车载关键
+  MEDIA = 0x0004,           // 媒体播放 (A2DP等价) ★车载关键
+  GAME = 0x0008,            // 游戏音频 (低延迟)
+  INSTRUCTIONAL = 0x0010,   // 导航/教学
+  VOICEASSISTANTS = 0x0020, // 语音助手
+  LIVE = 0x0040,            // 现场音频
+  SOUNDEFFECTS = 0x0080,    // 音效
+  NOTIFICATIONS = 0x0100,   // 通知音
+  RINGTONE = 0x0200,        // 铃声
+  ALERTS = 0x0400,          // 警告
+  EMERGENCYALARM = 0x0800,  // 紧急警报 ★车载关键
+  RFU = 0x1000,             // 保留
+};
+
+// ===== AudioContexts位图类 (le_audio_types.h:L444-L476) =====
+// 封装位运算, 支持多场景组合 (如 MEDIA | SOUNDEFFECTS)
+class AudioContexts {
+  using T = std::underlying_type<LeAudioContextType>::type;
+  T mValue;  // 底层位图值
+
+public:
+  void set(const LeAudioContextType& v) { mValue |= static_cast<T>(v); }    // 💡C++: static_cast<>()安全类型转换, Java需显式强转
+  void unset(const LeAudioContextType& v) { mValue &= ~static_cast<T>(v); } // 清除场景位
+  bool test(const LeAudioContextType& v) const {                            // 💡C++: const成员函数承诺不修改对象, Java无此机制
+    return (mValue & static_cast<T>(v)) != 0;
+  }
+  bool test_any(const AudioContexts& v) const {  // 测试任意位
+    return (mValue & v.value()) != 0;
+  }
+  void clear() { mValue = static_cast<T>(LeAudioContextType::UNINITIALIZED); }
+};
+
+// ===== 预定义场景组合 (le_audio_types.h:L558-L570) =====
+constexpr AudioContexts kLeAudioContextAllBidir =           // 所有双向场景
+    LeAudioContextType::GAME | LeAudioContextType::LIVE |
+    LeAudioContextType::CONVERSATIONAL | LeAudioContextType::VOICEASSISTANTS;
+
+constexpr AudioContexts kLeAudioContextAllRemoteSinkOnly =  // 所有仅Sink场景
+    LeAudioContextType::MEDIA | LeAudioContextType::INSTRUCTIONAL |
+    LeAudioContextType::SOUNDEFFECTS | LeAudioContextType::NOTIFICATIONS |
+    LeAudioContextType::RINGTONE | LeAudioContextType::ALERTS |
+    LeAudioContextType::EMERGENCYALARM;
+```
 
 ---
 
-## 六、配套服务生态
+## 💡 C++知识卡片
 
-### 6.1 TMAS (Telephony & Media Audio Service)
-
-**UUID**: `0x1855` (TMAS), `0x2B51` (TMAP Role)
-
-**TMAP角色定义**：
-- **CG** (Call Gateway): 电话网关 (车机侧)
-- **CT** (Call Terminal): 电话终端 (耳机侧)
-- **UGT** (Unicast Game Terminal): 游戏终端
-- **UMS** (Unicast Media Sender): 媒体发送者
-- **UMR** (Unicast Media Receiver): 媒体接收者
-- **BMS** (Broadcast Media Sender): 广播发送者
-- **BMR** (Broadcast Media Receiver): 广播接收者
-
-### 6.2 CSIS (Coordinated Set Identification Service)
-
-[CSIS](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/csis/csis_types.h) 管理**协调集** (coordinated set)— 一套物理上分离但逻辑上同一组的设备（如一对TWS耳机）。
+### 卡片1：`std::underlying_type` — 枚举底层类型提取
 
 ```cpp
-// CSIS UUID体系
-CSIS Service:   0x1846
-SIRK:           0x2B84  (Set Identity Resolving Key - 群组密钥)
-Size:           0x2B85  (群组大小: 左+右=2)
-Lock:           0x2B86  (锁定状态: 0=解锁, 1=锁定)
-Rank:           0x2B87  (成员排序: 1=左, 2=右)
+// 来源: le_audio_types.h:L445
+using T = std::underlying_type<LeAudioContextType>::type;
 ```
 
-**CSIS工作流程**：
-1. 发现CSIS实例 → 读取SIRK → 识别同组设备
-2. 读取Rank → 确定左右声道分配
-3. Lock操作 → 一次Lock可将所有组成员同时连接
+**用途**：`LeAudioContextType`是`enum class : uint16_t`，C++不允许隐式将`enum class`转为整数。`std::underlying_type`在编译期提取其底层类型`uint16_t`，使得可以安全地进行位运算。
 
-**车载意义**：TWS耳机左+右需要CSIS来确保车机将其视为一个逻辑设备，统一codec配置和音量。
+**为什么不用`static_cast<int>`？** 因为`int`可能是32位，而枚举底层是`uint16_t`(16位)。使用`underlying_type`保证类型精确匹配，避免符号扩展或截断问题。
 
-### 6.3 HAS (Hearing Access Service)
-
-[HAS](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/has/has_types.h) 为助听器提供预设管理：
-
+**典型用法模式**：
 ```cpp
-// HAS UUID体系
-HAS Service:           0x1854
-ActivePresetIndex:     0x2BDC  (当前活跃预设)
-PresetControlPoint:    0x2BDB  (预设控制点)
-HearingAidFeatures:    0x2BDA  (助听器特性)
+enum class LeAudioContextType : uint16_t { MEDIA = 0x0004, GAME = 0x0008 };
+
+// ❌ 编译错误: enum class不能直接位运算
+// auto result = LeAudioContextType::MEDIA | LeAudioContextType::GAME;
+
+// ✅ 通过underlying_type安全转换
+using T = std::underlying_type<LeAudioContextType>::type;  // T = uint16_t
+T result = static_cast<T>(LeAudioContextType::MEDIA) |
+           static_cast<T>(LeAudioContextType::GAME);       // 0x000C
 ```
 
-**HAS Client** (`has_client.cc`): 读取Preset列表 → 切换预设→ 应用于不同听力场景(车内/室内/室外)。
-
-### 6.4 VCS (Volume Control Service)
-
-[VCS](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/vc/types.h) 提供标准化的音量控制：
+### 卡片2：`std::optional` — 可选值与延迟初始化
 
 ```cpp
-// VCS UUID体系
-VCS Service:   0x1844
-VCS State:     0x2B7D  (Volume + Mute + Step)
-VCP:           0x2B7E  (Control Point)
-VolumeFlags:   0x2B7F
-VOCS Service:  0x1845  (Volume Offset Control - 独立通道偏移)
-VO State:      0x2B80  (每通道偏移量)
-AICS Service:  0x1843  (Audio Input Control)
+// 来源: le_audio_types.h:L587-L591
+struct LeAudioCoreCodecConfig {
+  std::optional<uint8_t> sampling_frequency;        // 可能不存在
+  std::optional<uint8_t> frame_duration;            // 可能不存在
+  std::optional<uint32_t> audio_channel_allocation; // 可能不存在
+  std::optional<uint16_t> octets_per_codec_frame;   // 可能不存在
+  std::optional<uint8_t> codec_frames_blocks_per_sdu;
+};
 ```
 
-**与AVRCP Absolute Volume的关系**：
-- AVRCP AbsVol: 经典蓝牙方案，通过AVCTP/Browsing通道
-- VCS: LE Audio原生方案，通过GATT直接读写
+**用途**：LC3编解码器配置中，并非所有参数都必须存在。例如在**能力协商阶段**，设备可能只声明支持的采样率，而不指定帧长。`std::optional`明确表达"值可能不存在"的语义。
 
-**车载常见场景**：单独控制左耳/右耳/中置声道的音量偏移。
-
-### 6.5 GMAP (Gaming Audio Profile)
-
-[GMAP](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/gmap/gmap_server.cc) 针对低延迟游戏音频优化：
-
+**vs 传统方案对比**：
 ```cpp
-// GMAP UUID
-GMAS Service:        0x1858
-Role Characteristic: 0x2C00  (角色: UGG/UGT)
-// UGG = Unicast Game Gateway (游戏网关=手机/车机)
-// UGT = Unicast Game Terminal (游戏终端=耳机)
-```
+// ❌ 传统方案: 用0或-1表示"不存在"，与合法值混淆
+uint8_t sampling_frequency = 0;  // 0到底是"不存在"还是"8kHz偏移0"?
 
-**启用条件** [gmap_client.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/gmap/gmap_client.cc)：
-
-```cpp
-bool IsGmapClientEnabled() {
-  return osi_property_get_bool("bluetooth.profile.gmap.enabled", false) &&
-    (controller_get_interface()->supports_offloader() || is_software_data_path_configured());
+// ✅ optional方案: 语义清晰
+std::optional<uint8_t> sampling_frequency;
+if (config.sampling_frequency.has_value()) {
+  uint8_t freq = config.sampling_frequency.value(); // 安全取值
 }
 ```
 
----
-
-## 七、车载 LE Audio 场景
-
-### 7.1 LE Audio vs A2DP + HFP 对比
-
-| 场景 | 经典方案 | LE Audio方案 | LE Audio优势 |
-|------|---------|-------------|-------------|
-| 音乐播放 | A2DP (SBC) | BAP Media Context (LC3) | 音质更好、延迟更低、功耗减半 |
-| 语音通话 | HFP (mSBC/CVSD) | BAP Conversational Context (LC3) | 超宽带语音、双向同时高质量 |
-| 多设备音频 | 需要多个A2DP连接 | CIG多CIS | 一个CIG内多设备同步，延迟可控 |
-| 后排独立音频 | 无法实现(单A2DP) | BIG多BIS广播 | 前排导航+后排电影独立分流 |
-| TWS耳机 | 左右各自配A2DP | CSIS+CIS双通道 | 统一管理，立体声同步更好 |
-| 数字钥匙+音 | 分离的BLE+A2DP | 同一BLE连接+CIS | 减少连接数，简化天线共存 |
-
-### 7.2 双模共存策略
-
-```
-车机同时支持 LE Audio + Classic Audio:
-
-优先级策略:
-  1. LE Audio设备优先使用LE Audio链路 (Media+Conversational)
-  2. 旧设备回退到A2DP+HFP
-  3. 通话切换: LE Audio CIS ⇄ HFP SCO
-     (通过 LeAudioService.mHfpHandoverDevice 管理)
-
-双模音频切换信号:
-  ACTION_LE_AUDIO_CONNECTION_STATE_CHANGED (Intent广播)
-  ACTION_LE_AUDIO_ACTIVE_DEVICE_CHANGED
-  ACTION_BROADCAST_TO_UNICAST_FALLBACK_GROUP_CHANGED
-```
-
-### 7.3 车载LE Audio配置建议
-
-```bash
-# 属性控制
-bluetooth.profile.leaudio.enabled=true         # 启用LE Audio
-bluetooth.profile.gmap.enabled=true            # 启用GMAP (游戏低延迟)
-bluetooth.profile.vcp.enabled=true             # 启用VCP (音量控制)
-bluetooth.profile.csis.enabled=true            # 启用CSIS (协调集)
-
-# 编解码器偏好
-# 通过 LeAudioClient.SetCodecConfigPreference() API设置:
-# - 首选LC3 48kHz/10ms (高音质)
-# - 车载导航语音可降为16kHz/7.5ms (省功耗)
-```
+**LE Audio中的关键场景**：PAC能力记录中`audio_channel_allocation`为`nullopt`表示"不指定位置"(Mono)，为`0x00000003`表示FrontLeft+FrontRight(立体声)。
 
 ---
 
-## 八、Feature Flags 关键配置
+## 🗂️ Java↔C++对照表
 
-[leaudio.aconfig](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/flags/leaudio.aconfig) 定义了31个LE Audio特性开关：
+| 功能 | Java层 | C++层 | 调用路径 |
+|------|--------|-------|---------|
+| **设备连接** | `BluetoothLeAudio.connect(addr)` | `LeAudioClient::Connect(addr)` | Java JNI → btif_le_audio.cc → BTA client.cc |
+| **组管理** | `LeAudioService.groupAddNode(groupId, addr)` | `LeAudioClient::GroupAddNode(groupId, addr)` | Java → btif → BTA |
+| **启动音频流** | `LeAudioService.groupStream(groupId, contentType)` | `LeAudioClient::GroupStream(groupId, contentType)` | Java → btif → StateMachine::StartStream |
+| **暂停音频流** | `LeAudioService.groupSuspend(groupId)` | `LeAudioClient::GroupSuspend(groupId)` | Java → btif → StateMachine::SuspendStream |
+| **停止音频流** | `LeAudioService.groupStop(groupId)` | `LeAudioClient::GroupStop(groupId)` | Java → btif → StateMachine::StopStream |
+| **设置活跃组** | `BluetoothLeAudio.setActiveDevice(addr)` | `LeAudioClient::GroupSetActive(groupId)` | Java → btif → BTA |
+| **编解码器偏好** | `BluetoothLeAudio.setCodecConfigPreference(groupId, config)` | `LeAudioClient::SetCodecConfigPreference(groupId, config)` | Java → btif → CodecManager |
+| **创建广播** | `BluetoothLeAudio.createBroadcast(config)` | `LeAudioBroadcaster::CreateAudioBroadcast(...)` | Java → btif_broadcaster → BTA broadcaster |
+| **开始广播** | `BluetoothLeAudio.startBroadcast(broadcastId)` | `LeAudioBroadcaster::StartAudioBroadcast(broadcastId)` | Java → btif_broadcaster → BTA |
+| **音量控制** | `BluetoothVolumeControl.setVolume(device, vol)` | `VolumeControl::SetVolume(addr, vol)` | Java → btif_vc → BTA vc/ |
+| **回调: 连接状态** | `LeAudioService.onConnectionState(state, addr)` | `LeAudioClientCallbacks::OnConnectionState` | BTA → btif(do_in_jni_thread) → Java |
+| **回调: 编解码能力** | `LeAudioService.onAudioLocalCodecCapabilities(...)` | `LeAudioClientCallbacks::OnAudioLocalCodecCapabilities` | BTA → btif → Java |
+| **回调: 组状态** | `LeAudioService.onGroupStatus(groupId, status)` | `LeAudioClientCallbacks::OnGroupStatus` | BTA → btif → Java |
 
-| Flag | 功能 | 类型 |
-|------|------|------|
-| `leaudio_broadcast_monitor_source_sync_status` | 广播源同步状态API | 导出API |
-| `leaudio_broadcast_volume_control_for_connected_devices` | 已连接广播设备音量控制 | 导出API |
-| `leaudio_set_codec_config_preference` | 编解码器偏好设置API | 功能 |
-| `leaudio_config_profile_enabling` | Profile启用配置方式 | 功能 |
-| `leaudio_connection_subrating` | 连接子速率优化 | 功能 |
-| `leaudio_dynamic_direction_opening` | 按需开启音频方向 | Bugfix |
-| `leaudio_add_opus_hi_res_codec_type` | OPUS Hi-Res编解码器 | Bugfix |
-| `dsa_use_codec_extensibility` | DSA参数使用codec扩展性API | Bugfix |
-| `leaudio_bis_sync_control` | BIS同步状态控制 | Bugfix |
-| `leaudio_use_context_type_manager` | 新Context管理器 | Bugfix |
-| `leaudio_improve_switching_le_audio_devices` | 设备切换优化 | Bugfix |
-| `leaudio_dynamic_data_path_change` | 动态数据路径切换 | 功能 |
-| `leaudio_broadcast_allow_monitoring_on_resume` | 休眠恢复后广播监听 | Bugfix |
+**关键桥接文件**：
+- JNI: [com_android_bluetooth_le_audio.cpp](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/jni/com_android_bluetooth_le_audio.cpp)
+- BTIF回调转发: [btif_le_audio.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_le_audio.cc) 中 `do_in_jni_thread(Bind(&LeAudioClientCallbacks::OnXxx, ...))`
 
 ---
 
-## 九、LE Audio 全部源码文件索引
+## 🐛 问题排查SOP
 
-### BTA 核心层 (34个文件)
+### SOP1：LE Audio设备连接后无声音
 
-| 文件 | 路径 |
-|------|------|
-| client.cc (Client主实现) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/client.cc) |
-| le_audio_types.h (类型定义) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h) |
-| state_machine.h (状态机接口) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/state_machine.h) |
-| codec_manager.h (编解码管理) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/codec_manager.h) |
-| devices.h (设备模型) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/devices.h) |
-| broadcaster/broadcaster.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/broadcaster/broadcaster.cc) |
+```
+Step 1: 检查GATT服务发现
+  → btsnoop: 搜索 "GATT Discover Services"
+  → 确认 PAC(0x1850) + ASCS(0x184E) 服务已发现
+  → ❌ 未发现 → 检查设备是否支持LE Audio, 检查Feature Flag
 
-### BTIF/Framework 层
+Step 2: 检查PAC能力协商
+  → btsnoop: 搜索 "Read By Type" + UUID 0x2BC9(Sink PAC)
+  → 确认返回的LC3配置包含目标采样率(如48kHz)
+  → ❌ 无匹配配置 → 检查CodecManager偏好设置
 
-| 文件 | 路径 |
-|------|------|
-| btif_le_audio.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/include/btif_le_audio.h) |
-| btif_le_audio.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_le_audio.cc) |
-| bt_le_audio.h (HAL) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/include/hardware/bt_le_audio.h) |
-| BluetoothLeAudio.java | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/framework/java/android/bluetooth/BluetoothLeAudio.java) |
-| LeAudioService.java | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/src/com/android/bluetooth/le_audio/LeAudioService.java) |
-| LeAudioNativeInterface.java | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/src/com/android/bluetooth/le_audio/LeAudioNativeInterface.java) |
+Step 3: 检查ASE状态转换
+  → 日志: 搜索 "AseState" 状态变化序列
+  → 期望: IDLE → CODEC_CONFIGURED → QOS_CONFIGURED → ENABLING → STREAMING
+  → ❌ 卡在CODEC_CONFIGURED → QoS Config写入失败, 检查ASE CP Write
 
-### ISO 传输层
+Step 4: 检查CIG/CIS建立
+  → 日志: 搜索 "CigState" + "CisState"
+  → 期望: CigState: NONE → CREATING → CREATED, CisState: IDLE → CONNECTING → CONNECTED
+  → ❌ CIG创建失败 → 检查Controller是否支持ISO (LE Read Local Supported Features)
+  → ❌ CIS建立超时 → 检查ACL连接是否稳定, PHY是否匹配
 
-| 文件 | 路径 |
-|------|------|
-| btm_iso_api.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api.h) |
-| btm_iso_api_types.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api_types.h) |
-| btm_iso_impl.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/btm/btm_iso_impl.h) |
-| le_iso_interface.h (GD HCI) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/hci/le_iso_interface.h) |
+Step 5: 检查ISO数据路径
+  → 日志: 搜索 "Setup ISO Data Path"
+  → 确认 status=0 (成功)
+  → ❌ 数据路径设置失败 → 检查LC3编解码器是否已加载, 检查Audio HAL
+
+Step 6: 检查Audio HAL
+  → 日志: 搜索 "LeAudioSinkAudioHalClient" / "StartAudioSession"
+  → 确认Audio HAL已启动LC3会话
+  → ❌ HAL未启动 → 检查le_audio_software_aidl.cc, 确认AIDL/HIDL HAL实现
+```
+
+### SOP2：Auracast广播无法被接收
+
+```
+Step 1: 检查广播源创建
+  → 日志: 搜索 "CreateAudioBroadcast"
+  → 确认 BroadcastState: STOPPED → CONFIGURING → CONFIGURED
+
+Step 2: 检查周期性广播(PA)
+  → btsnoop: 搜索 "LE Set Periodic Advertising Parameters"
+  → 确认PA已启动, 包含BIGInfo
+  → ❌ PA未启动 → 检查adv_handle是否有效
+
+Step 3: 检查BIG创建
+  → 日志: 搜索 "BIG Create"
+  → 确认 num_bis > 0, phy=2M(推荐)
+  → ❌ BIG创建失败 → 检查Controller广播ISO支持
+
+Step 4: 检查加密
+  → 如果使用加密: 确认Broadcast Code正确(16字节)
+  → 接收端必须输入相同的Broadcast Code
+
+Step 5: 检查元数据
+  → 确认Basic Audio Announcement Data包含正确的codec配置
+  → 接收端需匹配: 采样率/帧长/通道分配
+```
+
+### SOP3：LE Audio ↔ Classic切换失败
+
+```
+Step 1: 检查双模偏好
+  → 日志: 搜索 "SendAudioProfilePreferences"
+  → 确认 is_output_preference_le_audio=true
+
+Step 2: 检查HFP Handover
+  → 日志: 搜索 "HfpHandoverDevice"
+  → LE Audio通话 → 检查是否成功切换到CIS Conversational Context
+  → Classic回退 → 检查SCO/eSCO是否建立
+
+Step 3: 检查Feature Flags
+  → 确认 leaudio_dynamic_direction_opening=true (按需开启方向)
+  → 确认 leaudio_config_profile_enabling=true (Profile配置方式)
+
+Step 4: 检查组状态
+  → 日志: 搜索 "GroupStreamStatus"
+  → 切换时期望: STREAMING → SUSPENDING → INACTIVE → (新Context) CONFIGURING → STREAMING
+  → ❌ 卡在SUSPENDING → 检查CIS断开是否完成
+```
+
+---
+
+## 🛠️ 动手练习
+
+### 练习1：解读CIS建立完成事件
+
+给定以下`cis_establish_cmpl_evt`日志输出：
+
+```
+status=0, cig_id=1, cis_conn_hdl=0x0035
+cig_sync_delay=2500, cis_sync_delay=1800
+trans_lat_mtos=7500, trans_lat_stom=7500
+phy_mtos=0x02, phy_stom=0x02
+nse=2, bn_mtos=1, bn_stom=1
+max_pdu_mtos=80, max_pdu_stom=40
+iso_itv=10000
+```
+
+**问题**：
+1. PHY `0x02`代表什么？车载场景推荐用哪个PHY？
+2. `trans_lat_mtos=7500`μs意味着什么？是否符合LE Audio低延迟承诺？
+3. `max_pdu_mtos=80`对应LC3的哪个帧长配置？推断采样率？
+4. `iso_itv=10000`μs对应LC3的哪个帧时长？
+
+<details>
+<summary>参考答案</summary>
+
+1. `0x02` = 2M PHY。车载推荐2M PHY（吞吐量高、抗干扰好）。1M PHY用于兼容旧设备，Coded PHY用于远距离。
+2. 7.5ms传输延迟，加上LC3编码7.5ms帧长，总延迟约15ms，远低于Classic的100-200ms，符合LE Audio承诺。
+3. `max_pdu_mtos=80`对应`kLeAudioCodecFrameLen80`。结合`iso_itv=10000`(10ms帧长)，推断48kHz采样率（80字节/10ms帧 ≈ 64kbps，LC3 48kHz/10ms典型配置）。
+4. `iso_itv=10000`μs = 10ms，对应`kLeAudioCodecFrameDur10000us`。
+
+</details>
+
+### 练习2：AudioContexts位图计算
+
+给定以下场景组合：
+
+```cpp
+AudioContexts contexts = LeAudioContextType::MEDIA
+                       | LeAudioContextType::SOUNDEFFECTS
+                       | LeAudioContextType::NOTIFICATIONS;
+```
+
+**问题**：
+1. `contexts.value()` 的十六进制值是多少？
+2. `contexts.test(LeAudioContextType::GAME)` 返回什么？
+3. 如何判断这个组合是否属于`kLeAudioContextAllRemoteSinkOnly`？
+4. 车载导航场景应该用哪个ContextType？它属于双向还是仅Sink？
+
+<details>
+<summary>参考答案</summary>
+
+1. `0x0004 | 0x0080 | 0x0100 = 0x0184`
+2. `false`（GAME=0x0008，不在0x0184中）
+3. `contexts.test_all(kLeAudioContextAllRemoteSinkOnly)` → 检查所有位是否都在SinkOnly集合中。结果是`true`，因为MEDIA/SOUNDEFFECTS/NOTIFICATIONS都属于仅Sink场景。
+4. 导航用`INSTRUCTIONAL`(0x0010)，属于`kLeAudioContextAllRemoteSinkOnly`（仅Sink，不需要麦克风方向）。
+
+</details>
+
+### 练习3：BTIF回调转发分析
+
+阅读以下BTIF层代码片段：
+
+```cpp
+void OnConnectionState(ConnectionState state, const RawAddress& address) override {
+  do_in_jni_thread(Bind(&LeAudioClientCallbacks::OnConnectionState,
+                        Unretained(callbacks), state, address));
+}
+```
+
+**问题**：
+1. 为什么用`do_in_jni_thread`而不是直接调用？
+2. `Unretained(callbacks)`有什么风险？为什么不使用`base::Owned`？
+3. 如果JNI线程被阻塞，会发生什么？
+
+<details>
+<summary>参考答案</summary>
+
+1. BTA层运行在BT线程，Java回调必须运行在JNI线程。`do_in_jni_thread`将任务投递到JNI线程消息循环，保证线程安全。
+2. `Unretained`不管理生命周期，如果`callbacks`在JNI线程执行前被销毁，会导致悬空指针崩溃。不用`base::Owned`因为callbacks的生命周期由LeAudioClientInterfaceImpl管理，不应被转移所有权。
+3. 回调会被延迟执行，Java层的连接状态更新会滞后。如果JNI线程长时间阻塞，可能导致状态不一致（如用户看到"连接中"但实际已连接）。
+
+</details>
+
+---
+
+## 📚 关键源码索引
+
+### BTA核心层
+
+| 文件 | 关键内容 | 源码入口 |
+|------|---------|---------|
+| client.cc | LeAudioClientImpl: 单播全流程 | [client.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/client.cc) |
+| le_audio_types.h | AseState/AudioContexts/LTV常量/通道位置 | [le_audio_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/le_audio_types.h) |
+| state_machine.h | LeAudioGroupStateMachine接口 | [state_machine.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/state_machine.h) |
+| codec_manager.h | CodecManager: 编解码选择/配置策略 | [codec_manager.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/codec_manager.h) |
+| devices.h | LeAudioDevice/Group: 设备模型 | [devices.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/devices.h) |
+| broadcaster.cc | LeAudioBroadcasterImpl: Auracast源 | [broadcaster.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/le_audio/broadcaster/broadcaster.cc) |
+
+### BTIF/Framework层
+
+| 文件 | 关键内容 | 源码入口 |
+|------|---------|---------|
+| btif_le_audio.cc | BTIF→BTA桥接 + JNI回调转发 | [btif_le_audio.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_le_audio.cc) |
+| btif_le_audio_broadcaster.cc | 广播BTIF接口 | [btif_le_audio_broadcaster.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_le_audio_broadcaster.cc) |
+| bt_le_audio.h | HAL层回调/接口定义 | [bt_le_audio.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/include/hardware/bt_le_audio.h) |
+| BluetoothLeAudio.java | Framework公开API | [BluetoothLeAudio.java](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/framework/java/android/bluetooth/BluetoothLeAudio.java) |
+| LeAudioService.java | Android服务实现 | [LeAudioService.java](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/src/com/android/bluetooth/le_audio/LeAudioService.java) |
+| LeAudioNativeInterface.java | JNI接口 | [LeAudioNativeInterface.java](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/src/com/android/bluetooth/le_audio/LeAudioNativeInterface.java) |
+
+### ISO传输层
+
+| 文件 | 关键内容 | 源码入口 |
+|------|---------|---------|
+| btm_iso_api.h | IsoManager接口 | [btm_iso_api.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api.h) |
+| btm_iso_api_types.h | CIG/BIG/CIS参数结构体 | [btm_iso_api_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/btm_iso_api_types.h) |
+| btm_iso_impl.h | IsoManager实现 | [btm_iso_impl.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/btm/btm_iso_impl.h) |
+| le_iso_interface.h | GD HCI ISO接口 | [le_iso_interface.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/hci/le_iso_interface.h) |
 
 ### 配套服务
 
-| 文件 | 路径 |
-|------|------|
-| csis_types.h (CSIS) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/csis/csis_types.h) |
-| has_client.cc (HAS) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/has/has_client.cc) |
-| types.h (VCS) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/vc/types.h) |
-| gmap_server.cc (GMAP) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/gmap/gmap_server.cc) |
+| 文件 | 服务 | 源码入口 |
+|------|------|---------|
+| csis_types.h | CSIS协调集 | [csis_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/csis/csis_types.h) |
+| has_client.cc | HAS助听器 | [has_client.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/has/has_client.cc) |
+| types.h (vc/) | VCS音量控制 | [types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/vc/types.h) |
+| gmap_server.cc | GMAP游戏音频 | [gmap_server.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/gmap/gmap_server.cc) |
 
 ### Feature Flags
 
-| 文件 | 路径 |
-|------|------|
-| leaudio.aconfig | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/flags/leaudio.aconfig) |
+| 文件 | 内容 | 源码入口 |
+|------|------|---------|
+| leaudio.aconfig | 31个LE Audio特性开关 | [leaudio.aconfig](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/flags/leaudio.aconfig) |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | 📋 本章导读：学习路径+核心变革3点 | ✅ |
+| 2 | 🗺️ 架构全景图：LE Audio协议栈(graph TD) | ✅ |
+| 3 | 🗺️ 架构全景图：ISO通道类型(graph LR) | ✅ |
+| 4 | 🗺️ 架构全景图：ASE状态机(stateDiagram-v2) | ✅ |
+| 5 | 🔍 代码导航表：16个核心文件+类名+入口 | ✅ |
+| 6 | 📖 核心流程1：LE Audio vs Classic对比表 | ✅ |
+| 7 | 📖 核心流程2：LC3 LTV编码体系(逐行注释) | ✅ |
+| 8 | 📖 核心流程3：ISO CIG/BIG参数结构(逐行注释) | ✅ |
+| 9 | 📖 核心流程4：ASE状态机枚举+StateMachine接口(逐行注释) | ✅ |
+| 10 | 📖 核心流程5：单播9步流程+LeAudioClient API(逐行注释) | ✅ |
+| 11 | 📖 核心流程6：Auracast LeAudioBroadcaster接口(逐行注释) | ✅ |
+| 12 | 📖 核心流程7：AudioContexts位图操作(逐行注释) | ✅ |
+| 13 | 💡 C++知识卡片1：std::underlying_type | ✅ |
+| 14 | 💡 C++知识卡片2：std::optional | ✅ |
+| 15 | 🗂️ Java↔C++对照表：13个核心API对照 | ✅ |
+| 16 | 🐛 问题排查SOP1：LE Audio无声音(6步) | ✅ |
+| 17 | 🐛 问题排查SOP2：Auracast无法接收(5步) | ✅ |
+| 18 | 🐛 问题排查SOP3：LE↔Classic切换失败(4步) | ✅ |
+| 19 | 🛠️ 动手练习：3个练习含参考答案 | ✅ |
+| 20 | 📚 关键源码索引：6类共20+文件 | ✅ |
+| 21 | V1内容保留：LE Audio vs Classic对比 | ✅ |
+| 22 | V1内容保留：LC3编解码器+LTV+28通道 | ✅ |
+| 23 | V1内容保留：ISO等时通道CIS+BIS | ✅ |
+| 24 | V1内容保留：BAP架构PAC+ASCS+ASE状态机 | ✅ |
+| 25 | V1内容保留：9步单播连接流程 | ✅ |
+| 26 | V1内容保留：Auracast广播音频 | ✅ |
+| 27 | V1内容保留：服务生态CSIS+HAS+VCS+GMAP+TMAS | ✅ |
+| 28 | V1内容保留：车载双模共存 | ✅ |
+| 29 | V1内容保留：31个Feature Flags | ✅ |
+| 30 | 源码行号引用准确（基于实际代码验证） | ✅ |

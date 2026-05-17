@@ -1,455 +1,384 @@
-# T32 GD Storage与Crypto详解
+# T32 GD Storage与Crypto详解 V2
 
-> 学习日期：2026-05-16
-> 使用工具：Trae+DS-v4-pro
-> 关键收获：
-> 1. Storage采用**三层ConfigCache架构**（information_sections + persistent_devices + LRU temporary_devices）实现持久化与临时数据分离
-> 2. 通过**Mutation模式**实现事务性配置修改，Mutation.Commit()原子提交所有变更
-> 3. Crypto Toolbox实现蓝牙规范定义的完整SMP安全函数链（c1→s1→f4→f5→f6→g2→h6→h7）
-> 4. BidiQueue是GD层间通信核心数据结构，实现栈层次间的双向生产者-消费者队列
-> 5. Metrics提供蓝牙全生命周期度量日志接口（适配器状态/绑定/Profile连接/ACL连接/芯片信息/LE隐私/Mmc转码）
+> 📅 学习日期：2026-05-17 | 🛠️ 工具：Trae+DS-v4-pro | 🎯 优先级：P7
+> 🔗 前置知识：T01（蓝牙整体架构）、T30（GD新架构）
+> 🚗 车载场景：配对设备管理、LinkKey丢失恢复、Factory Reset、LTK↔LinkKey Dual Mode转换
 
 ---
 
-## 1. GD Storage 模块
+## 📋 本章导读
 
-### 1.1 架构总览
+本章深入剖析Android蓝牙GD栈中**Storage持久化存储**与**Crypto安全加密**两大核心模块，以及支撑它们的**Common工具集**和**Metrics度量体系**。
 
-Storage模块是GD栈的**设备配置持久化存储后端**，负责管理配对设备信息、Link Key、设备属性等数据。核心设计采用**内存缓存 + 延迟写磁盘**策略：
+**五大核心收获**：
 
-```
-StorageModule (入口层)
-├── impl (PIMPL隐藏实现)
-│   ├── ConfigCache cache_              ← 持久化配置缓存 (写磁盘)
-│   ├── ConfigCache memory_only_cache_  ← 仅内存配置缓存 (不写磁盘，上限10000设备)
-│   └── Alarm config_save_alarm_        ← 延迟保存定时器 (默认3秒)
-├── Device / ClassicDevice / LeDevice   ← 类型化设备访问接口
-├── Mutation / MutationEntry            ← 事务性配置修改
-└── ConfigCacheHelper                   ← 类型安全的配置读写包装器
-```
+| # | 核心要点 | 一句话总结 |
+|---|---------|-----------|
+| 1 | **Storage三层ConfigCache** | information_sections(通用配置) + persistent_devices(已配对设备) + LRU temporary_devices(临时设备)，持久与临时数据分离 |
+| 2 | **Mutation事务模式** | MutationEntry(SET/REMOVE_PROPERTY/REMOVE_SECTION) + Mutation.Commit()原子提交，recursive_mutex保证线程安全 |
+| 3 | **Crypto SMP安全函数链** | AES-128(Gladman) → AES-CMAC → c1/s1/f4/f5/f6/g2/h6/h7，完整覆盖蓝牙规范 |
+| 4 | **BidiQueue双向队列** | GD层间通信核心，上层端点/下层端点 + RegisterEnqueue/RegisterDequeue回调 |
+| 5 | **Metrics全生命周期度量** | 适配器状态/配对/Profile连接/ACL/芯片信息/LE隐私/Mmc转码七大维度 |
 
-**关键源码**：[storage_module.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.h#L49-L197)，[storage_module.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.cc#L84-L138)
+**阅读路线**：架构全景 → 代码导航 → Storage核心 → Crypto核心 → Common工具 → 实战
 
 ---
 
-### 1.2 ConfigCache — 内存中的Section-Key-Value结构
+## 🗺️ 架构全景图
 
-[ConfigCache](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache.h#L54-L157) 是Storage的**内存数据核心**，采用INI风格的 Section→Key→Value 三层结构。
+### 1. Storage三层架构
 
-#### 三个数据分区：
+```mermaid
+graph TD
+    subgraph StorageModule["StorageModule 入口层"]
+        SM_CTOR["构造函数<br/>FactoryReset→Checksum→读磁盘→回调→FixDeviceType"]
+        SM_MODIFY["Modify()<br/>返回Mutation句柄"]
+        SM_GET["GetDeviceByXxx()<br/>三种设备寻址"]
+        SM_SAVE["SaveDelayed/SaveImmediately<br/>3秒防抖写磁盘"]
+    end
 
-| 分区 | 数据结构 | 用途 | 是否持久化 |
-|------|----------|------|-----------|
-| `information_sections_` | `ListMap<string, ListMap<string, string>>` | 通用配置（适配器信息、时间戳等） | ✅ 写磁盘 |
-| `persistent_devices_` | `ListMap<string, ListMap<string, string>>` | 已配对设备信息 | ✅ 写磁盘 |
-| `temporary_devices_` | `LruCache<string, ListMap<string, string>>` | 未配对临时设备（LRU淘汰） | ❌ 仅内存 |
+    subgraph ConfigCache["ConfigCache 内存核心"]
+        INFO["information_sections_<br/>ListMap&lt;string, ListMap&gt;<br/>通用配置 ✅持久化"]
+        PERSIST["persistent_devices_<br/>ListMap&lt;string, ListMap&gt;<br/>已配对设备 ✅持久化"]
+        TEMP["temporary_devices_<br/>LruCache&lt;string, ListMap&gt;<br/>临时设备 ❌仅内存"]
+    end
 
-```cpp
-// config_cache.h 核心成员
-class ConfigCache {
-private:
-  mutable std::recursive_mutex mutex_;
-  std::function<void()> persistent_config_changed_callback_;
-  std::unordered_set<std::string_view> persistent_property_names_;
+    subgraph DeviceLayer["设备抽象层"]
+        DEV["Device<br/>通用属性+宏生成"]
+        CLASSIC["ClassicDevice<br/>LinkKey/LinkKeyType"]
+        LE["LeDevice<br/>PeerId/PeerEncKeys/PeerCSRK"]
+    end
 
-  common::ListMap<std::string, common::ListMap<std::string, std::string>> information_sections_;
-  common::ListMap<std::string, common::ListMap<std::string, std::string>> persistent_devices_;
-  common::LruCache<std::string, common::ListMap<std::string, std::string>> temporary_devices_;
-};
+    subgraph MutationLayer["事务修改层"]
+        MUT["Mutation<br/>Add+Commit原子提交"]
+        ME["MutationEntry<br/>SET/REMOVE_PROPERTY/REMOVE_SECTION"]
+    end
+
+    subgraph HelperLayer["辅助层"]
+        CCH["ConfigCacheHelper<br/>Get&lt;T&gt;模板特化<br/>类型安全读写"]
+        LCF["LegacyConfigFile<br/>INI格式序列化<br/>磁盘读写"]
+    end
+
+    SM_CTOR --> INFO
+    SM_CTOR --> PERSIST
+    SM_CTOR --> TEMP
+    SM_MODIFY --> MUT
+    MUT --> ME
+    ME --> ConfigCache
+    SM_GET --> DEV
+    DEV --> CLASSIC
+    DEV --> LE
+    CLASSIC --> CCH
+    LE --> CCH
+    CCH --> ConfigCache
+    SM_SAVE --> LCF
+    INFO --> LCF
+    PERSIST --> LCF
+
+    style INFO fill:#4CAF50,color:#fff
+    style PERSIST fill:#2196F3,color:#fff
+    style TEMP fill:#FF9800,color:#fff
+    style MUT fill:#9C27B0,color:#fff
+    style CCH fill:#607D8B,color:#fff
 ```
 
-#### Persistent vs Temporary 判定逻辑：
+### 2. Crypto函数链
 
-- **Section变为Persistent**：当该Section的某个Property在 `persistent_property_names_` 集合中（如 LinkKey 属性）
-- **Section变为Temporary**：当该Section中所有 `persistent_property_names_` 属性被移除
-- **Temporary Devices上限**：默认10000个设备，基于LRU自动淘汰
+```mermaid
+graph LR
+    AES["AES-128<br/>Gladman实现<br/>纯8-bit操作"] --> CMAC["AES-CMAC<br/>CBC-MAC签名"]
+    CMAC --> C1["c1<br/>配对确认值<br/>Legacy配对"]
+    CMAC --> S1["s1<br/>STK生成<br/>Legacy配对"]
+    CMAC --> F4["f4<br/>DHKey Check<br/>Secure Connections"]
+    F4 --> F5["f5<br/>LTK+MAC Key生成<br/>SC配对"]
+    F5 --> F6["f6<br/>配对确认/检查值<br/>SC配对"]
+    CMAC --> G2["g2<br/>6位数字比较值<br/>Numeric Comparison"]
+    CMAC --> H6["h6<br/>密钥推导<br/>W→CMAC(W,keyID)"]
+    CMAC --> H7["h7<br/>带salt密钥推导<br/>CMAC(salt,W)"]
 
-#### 核心API：
+    H6 --> LTLK["ltk_to_link_key<br/>h6(ILK,'lebr')"]
+    H7 --> LTLK2["ltk_to_link_key<br/>h7('1pmt',ltk)→h6(ILK,'lebr')"]
+    H6 --> LKTL["link_key_to_ltk<br/>h6(ILTK,'brle')"]
+    H7 --> LKTL2["link_key_to_ltk<br/>h7('2pmt',lk)→h6(ILTK,'brle')"]
 
-```cpp
-// 观察者
-virtual bool HasSection(const std::string& section) const;
-virtual bool HasProperty(const std::string& section, const std::string& property) const;
-virtual std::optional<std::string> GetProperty(const std::string& section, const std::string& property) const;
-virtual std::vector<std::string> GetPersistentSections() const;
-virtual std::string SerializeToLegacyFormat() const;
+    style AES fill:#E91E63,color:#fff
+    style CMAC fill:#FF5722,color:#fff
+    style F5 fill:#3F51B5,color:#fff
+    style H6 fill:#009688,color:#fff
+    style H7 fill:#009688,color:#fff
+```
 
-// 修改器
-virtual void Commit(std::queue<MutationEntry>& mutation);  // 原子提交变更队列
-virtual void SetProperty(std::string section, std::string property, std::string value);
-virtual bool RemoveSection(const std::string& section);
-virtual void SetPersistentConfigChangedCallback(std::function<void()> callback);
+### 3. Mutation事务流程
+
+```mermaid
+sequenceDiagram
+    participant App as 调用方
+    participant SM as StorageModule
+    participant Mut as Mutation
+    participant CC as ConfigCache
+    participant Alarm as Alarm定时器
+    participant Disk as LegacyConfigFile
+
+    App->>SM: Modify()
+    SM-->>Mut: Mutation(&cache_, &memory_only_cache_)
+
+    App->>Mut: Add(device.SetName("MyCar"))
+    Note over Mut: MutationEntry{SET, NORMAL, section, "Name", "MyCar"}
+
+    App->>Mut: Add(device.Classic().SetLinkKey(key))
+    Note over Mut: MutationEntry{SET, NORMAL, section, "LinkKey", key_str}
+
+    App->>Mut: Add(device.Le().SetPeerId(irk))
+    Note over Mut: MutationEntry{SET, NORMAL, section, "LE_KEY_PID", irk_str}
+
+    App->>Mut: Commit()
+    Mut->>CC: Commit(normal_config_entries_)
+    Note over CC: 持有recursive_mutex<br/>逐条执行SET/REMOVE
+
+    CC-->>CC: PersistentConfigChangedCallback()
+    CC->>SM: SaveDelayed()
+
+    SM->>Alarm: Schedule(3秒后, SaveImmediately)
+    Note over Alarm: has_pending_config_save_ = true
+
+    Note over Alarm: 3秒后...
+    Alarm->>SM: SaveImmediately()
+    SM->>Disk: Write(cache_)
+    Note over Disk: 序列化为INI格式<br/>写入bt_config.conf
+
+    opt Common Criteria Mode
+        SM->>Disk: set_encrypt_key_or_remove_key()
+    end
 ```
 
 ---
 
-### 1.3 StorageModule — 存储模块主入口
+## 🔍 代码导航表
 
-[StorageModule](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.h#L49-L197) 是外部访问存储层的**唯一入口**，负责：
+| 模块 | 文件 | 核心类/函数 | 行号 | 职责 |
+|------|------|------------|------|------|
+| **Storage** | [storage_module.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.h) | StorageModule | L49-L197 | 存储模块唯一入口 |
+| | [storage_module.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.cc) | 构造函数 | L84-L138 | FactoryReset→Checksum→读磁盘→回调→FixDeviceType |
+| | [storage_module.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.cc) | SaveDelayed/SaveImmediately | L166-L198 | 3秒防抖写磁盘 |
+| | [config_cache.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache.h) | ConfigCache | L54-L157 | 内存Section-Key-Value核心 |
+| | [device.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/device.h) | Device+宏 | L50-L224 | 宏驱动属性生成器 |
+| | [classic_device.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/classic_device.h) | ClassicDevice | L31-L90 | LinkKey/LinkKeyType |
+| | [le_device.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/le_device.h) | LeDevice | L29-L92 | PeerId/PeerEncKeys/PeerCSRK |
+| | [mutation.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation.h) | Mutation | L26-L38 | Add+Commit原子提交 |
+| | [mutation_entry.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation_entry.h) | MutationEntry | L28-L117 | SET/REMOVE_PROPERTY/REMOVE_SECTION |
+| | [config_cache_helper.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache_helper.h) | ConfigCacheHelper | L39-L151 | Get\<T\>模板特化 |
+| **Crypto** | [crypto_toolbox.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.h) | SMP安全函数 | L27-L49 | c1/s1/f4/f5/f6/g2/h6/h7 |
+| | [aes.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes.h) | AES-128/256 | - | Gladman纯8-bit实现 |
+| | [aes_cmac.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes_cmac.cc) | AES-CMAC | - | CBC-MAC签名 |
+| **Common** | [bidi_queue.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/bidi_queue.h) | BidiQueue | - | 双向生产者-消费者队列 |
+| | [lru_cache.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/lru_cache.h) | LruCache | L34-L198 | LRU淘汰策略缓存 |
+| **Metrics** | [metrics.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/metrics/metrics.h) | LogMetrics* | L24-L53 | 全生命周期度量 |
 
-#### 构造函数 — 初始化流程：
+---
+
+## 📖 核心流程详解
+
+### 流程1：StorageModule初始化（5步启动）
 
 ```cpp
 // storage_module.cc:L84-L138
-StorageModule::StorageModule(os::Handler* handler, std::string config_file_path, ...)
-{
-  // 1. 检查 Factory Reset 标志 → 删除配置文件
-  if (os::GetSystemProperty("persist.bluetooth.factoryreset") == "true") {
-    LegacyConfigFile::FromPath(config_file_path_).Delete();
+StorageModule::StorageModule(os::Handler* handler, std::string config_file_path,
+                             std::chrono::milliseconds config_save_delay,
+                             size_t temp_devices_capacity, ...) {
+  // Step 1: 校验config_save_delay必须 > 20ms，避免磁盘IO过于频繁
+  log::assert_that(config_save_delay > kMinConfigSaveDelay, ...);
+
+  std::lock_guard<std::recursive_mutex> lock(mutex_);  // 💡C++: RAII锁, 构造时加锁, 析构时自动解锁; Java用synchronized
+
+  // Step 2: 检查Factory Reset标志 → 为true则删除配置文件并重置标志
+  if (os::GetSystemProperty(kFactoryResetProperty) == "true") {
+    LegacyConfigFile::FromPath(config_file_path_).Delete();  // 删除bt_config.conf
+    os::SetSystemProperty(kFactoryResetProperty, "false");   // 重置标志
   }
 
-  // 2. 校验 config checksum → 不通过则删除配置
+  // Step 3: 校验config checksum → 不通过则删除配置（防篡改/防损坏）
   if (!is_config_checksum_pass(kConfigFileComparePass)) {
     LegacyConfigFile::FromPath(config_file_path_).Delete();
   }
 
-  // 3. 从磁盘读取配置 or 创建新配置
+  // Step 4: 从磁盘读取配置，失败则创建空ConfigCache
   auto config = LegacyConfigFile::FromPath(config_file_path_).Read(temp_devices_capacity_);
   if (!config || !config->HasSection(kAdapterSection)) {
-    config.emplace(temp_devices_capacity_, Device::kLinkKeyProperties);
-    config->SetProperty(kInfoSection, kTimeCreatedProperty, "2026-05-16 ...");
+    config.emplace(temp_devices_capacity_, Device::kLinkKeyProperties);  // 💡C++: emplace原地构造, 避免临时对象拷贝; Java用map.put()  // 空缓存+LinkKey属性集
+    config->SetProperty(kInfoSection, kTimeCreatedProperty, timestamp);  // 写入创建时间
   }
 
-  // 4. 设置 PersistentConfigChanged 回调 → 每次持久配置变更自动触发延迟保存
+  // Step 5: 创建PIMPL + 设置回调 + 修复设备类型
+  pimpl_ = std::make_unique<impl>(handler_, std::move(config.value()), temp_devices_capacity_);  // 💡C++: make_unique创建智能指针 + std::move转移config所有权
   pimpl_->cache_.SetPersistentConfigChangedCallback(
-    [this] { handler_->CallOn(this, &StorageModule::SaveDelayed); });
-
-  // 5. FixDeviceTypeInconsistencies (修复旧栈遗留的DeviceType不一致问题)
-  pimpl_->cache_.FixDeviceTypeInconsistencies();
+    [this] { handler_->CallOn(this, &StorageModule::SaveDelayed); });  // 持久配置变更→延迟保存
+  pimpl_->cache_.FixDeviceTypeInconsistencies();  // 修复旧栈遗留DeviceType不一致
 }
 ```
 
-#### 三种设备寻址方式：
+**车载场景**：Factory Reset是车载恢复出厂设置的关键路径。设置 `persist.bluetooth.factoryreset=true` 后重启蓝牙，配置自动清空。
 
-| 方法 | 寻址方式 | 适用场景 |
-|------|----------|----------|
-| `GetDeviceByLegacyKey(address)` | 旧版Key MAC地址（包含随机地址） | 迁移兼容、LE设备尚未配对时 |
-| `GetDeviceByClassicMacAddress(address)` | BR/EDR 固定MAC地址 | 经典蓝牙设备 |
-| `GetDeviceByLeIdentityAddress(address)` | LE Identity地址（解析后的静态地址） | LE设备配对后 |
+---
+
+### 流程2：延迟保存机制（3秒防抖）
 
 ```cpp
-Device GetDeviceByLegacyKey(hci::Address legacy_key_address);
-Device GetDeviceByClassicMacAddress(hci::Address classic_address);
-Device GetDeviceByLeIdentityAddress(hci::Address le_identity_address);
-std::vector<Device> GetBondedDevices();  // 获取全部已配对设备
-```
-
-#### 延迟保存机制（防抖写入）：
-
-```cpp
+// storage_module.cc:L50-L53 常量定义
 static const std::chrono::milliseconds kDefaultConfigSaveDelay = std::chrono::milliseconds(3000);
 static const std::chrono::milliseconds kMinConfigSaveDelay = std::chrono::milliseconds(20);
 
+// storage_module.cc:L166-L175 延迟保存
 void StorageModule::SaveDelayed() {
-  // 如果已有pending操作，跳过（防抖）
-  if (pimpl_->has_pending_config_save_) return;
-  // 设置3秒后延迟保存
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (pimpl_->has_pending_config_save_) {
+    return;  // 已有pending操作，跳过（防抖核心：合并多次变更为一次写入）
+  }
   pimpl_->config_save_alarm_.Schedule(
     common::BindOnce(&StorageModule::SaveImmediately, common::Unretained(this)),
-    config_save_delay_);
+    config_save_delay_);  // 3秒后执行SaveImmediately
   pimpl_->has_pending_config_save_ = true;
 }
 
+// storage_module.cc:L177-L198 立即保存
 void StorageModule::SaveImmediately() {
-  // 取消pending alarm
-  pimpl_->config_save_alarm_.Cancel();
-  pimpl_->has_pending_config_save_ = false;
-  // 序列化写入磁盘
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (pimpl_->has_pending_config_save_) {
+    pimpl_->config_save_alarm_.Cancel();  // 取消alarm
+    pimpl_->has_pending_config_save_ = false;
+  }
+  // 序列化ConfigCache为INI格式，写入磁盘
   LegacyConfigFile::FromPath(config_file_path_).Write(pimpl_->cache_);
-  // Common Criteria模式写入checksum
-  if (IsCommonCriteriaMode()) {
-    GetBtKeystoreInterface()->set_encrypt_key_or_remove_key(kConfigFilePrefix, kConfigFileHash);
+  // Common Criteria安全模式下写入checksum
+  if (bluetooth::os::ParameterProvider::GetBtKeystoreInterface() != nullptr &&
+      bluetooth::os::ParameterProvider::IsCommonCriteriaMode()) {
+    bluetooth::os::ParameterProvider::GetBtKeystoreInterface()
+      ->set_encrypt_key_or_remove_key(kConfigFilePrefix, kConfigFileHash);
   }
 }
 ```
 
-**设计精妙之处**：3秒延迟防抖 —— 连续多次配置变更不会导致多次写磁盘，而是合并一次写入。析构函数中如果有pending save会强制 `SaveImmediately()`。
+**设计精妙之处**：3秒延迟防抖——连续多次配置变更不会导致多次写磁盘，而是合并一次写入。析构函数中如果有pending save会强制 `SaveImmediately()`。
 
 ---
 
-### 1.4 Device / ClassicDevice / LeDevice — 类型化设备抽象
-
-#### Device (通用设备)
-
-[Device](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/device.h#L122-L224) 提供与设备类型无关的通用属性访问。
-
-**宏驱动的属性生成器**：
+### 流程3：Mutation事务提交
 
 ```cpp
-#define GENERATE_PROPERTY_GETTER_SETTER_REMOVER(NAME, RETURN_TYPE, PROPERTY_KEY)
-public:
-  std::optional<RETURN_TYPE> Get##NAME() const {
-    return ConfigCacheHelper(*config_).Get<RETURN_TYPE>(section_, PROPERTY_KEY);
+// mutation.cc:L30-L41 构造+添加
+Mutation::Mutation(ConfigCache* config, ConfigCache* memory_only_config)
+    : config_(config), memory_only_config_(memory_only_config) {
+  log::assert_that(config_ != nullptr, "assert failed: config_ != nullptr");
+  log::assert_that(memory_only_config_ != nullptr, "assert failed: memory_only_config_ != nullptr");
+}
+
+void Mutation::Add(MutationEntry entry) {
+  switch (entry.property_type) {
+    case MutationEntry::PropertyType::NORMAL:
+      // 关键：NORMAL的REMOVE操作需同步到memory_only_config
+      if (entry.entry_type != MutationEntry::EntryType::SET) {
+        memory_only_config_entries_.emplace(entry);
+      }
+      normal_config_entries_.emplace(std::move(entry));
+      break;
+    case MutationEntry::PropertyType::MEMORY_ONLY:
+      memory_only_config_entries_.emplace(std::move(entry));
+      break;
   }
-  MutationEntry Set##NAME(const RETURN_TYPE& value) {
-    return MutationEntry::Set<RETURN_TYPE>(..., section_, PROPERTY_KEY, value);
-  }
-  MutationEntry Remove##NAME() {
-    return MutationEntry::Remove(..., section_, PROPERTY_KEY);
-  }
-```
+}
 
-Device通过宏自动生成以下属性方法：
+// mutation.cc:L49-L51 原子提交
+void Mutation::Commit() {
+  config_->Commit(normal_config_entries_);           // 持久配置变更
+  memory_only_config_->Commit(memory_only_config_entries_);  // 内存配置变更
+}
 
-| 属性 | Get/Set/Remove | 类型 |
-|------|---------------|------|
-| Name | GetName/SetName/RemoveName | std::string |
-| ClassOfDevice | GetClassOfDevice/SetClassOfDevice | hci::ClassOfDevice |
-| DeviceType | GetDeviceType/SetDeviceType (OR运算) | hci::DeviceType |
-| ServiceUuids/ServiceUuidsLe | Get/Set/Remove | vector<hci::Uuid> |
-| ManufacturerCode/LmpVersion/LmpSubVersion | ... | uint16_t/uint8_t/uint16_t |
-| MetricsId/PinLength/CreationUnixTimestamp | ... | int/int/int |
-
-**三种Property类型宏**：
-
-| 宏 | 属性类型 | 持久化 | 适用范围 |
-|----|---------|--------|---------|
-| `GENERATE_PROPERTY_GETTER_SETTER_REMOVER` | NORMAL | ✅ 写磁盘 | 固定属性 |
-| `GENERATE_TEMP_PROPERTY_GETTER_SETTER_REMOVER` | MEMORY_ONLY | ❌ 不写磁盘 | 临时属性，重启丢失 |
-| `GENERATE_PROPERTY_GETTER_SETTER_REMOVER_WITH_CUSTOM_SETTER` | NORMAL+自定义Setter | ✅ | DeviceType(OR累加) |
-
-#### ClassicDevice — 经典蓝牙专属
-
-[ClassicDevice](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/classic_device.h#L31-L90) 管理经典蓝牙特有属性：
-
-```cpp
-class ClassicDevice {
-public:
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(LinkKey, hci::LinkKey, "LinkKey");
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(LinkKeyType, hci::KeyType, "LinkKeyType");
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(SdpDiManufacturer, uint16_t, "SdpDiManufacturer");
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(SdpDiModel, uint16_t, "SdpDiModel");
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(SdpDiHardwareVersion, uint16_t, "SdpDiHardwareVersion");
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(SdpDiVendorIdSource, uint16_t, "SdpDiVendorIdSource");
-
-  bool IsPaired() const;  // 检查是否有LinkKey属性 → 判定已配对
-  hci::Address GetAddress() const;
-};
-```
-
-#### LeDevice — LE设备专属
-
-[LeDevice](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/le_device.h#L29-L92) 管理LE设备特有安全信息：
-
-```cpp
-class LeDevice {
-public:
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(AddressType, hci::AddressType, BTIF_STORAGE_KEY_ADDR_TYPE);
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(PeerId, std::string, BTIF_STORAGE_KEY_LE_KEY_PID);
-  // PeerId = IRK + Identity Address Type + Identity Address
-
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(PeerEncryptionKeys, std::string, BTIF_STORAGE_KEY_LE_KEY_PENC);
-  // PeerEncryptionKeys = LTK + RAND + EDIV + Security Level + Key Length
-
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(PeerSignatureResolvingKeys, std::string, BTIF_STORAGE_KEY_LE_KEY_PCSRK);
-  // PeerCSRK = counter + CSRK + Security Level
-
-  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(LegacyPseudoAddress, hci::Address, "LeLegacyPseudoAddr");
-
-  bool IsPaired() const;
-};
-```
-
-**存储的关键安全信息**：
-- **PeerId**：IRK（Identity Resolving Key）+ 身份地址类型 + 身份地址 → LE隐私地址解析
-- **PeerEncryptionKeys**：LTK（Long Term Key）+ RAND + EDIV + 安全等级 + Key长度 → LE加密
-- **PeerSignatureResolvingKeys**：CSRK（Connection Signature Resolving Key）+ counter → 数据签名
-
----
-
-### 1.5 Mutation模式 — 事务性配置修改
-
-[MutationEntry](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation_entry.h#L28-L117) + [Mutation](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation.h#L26-L38) 提供**原子性批量配置修改**。
-
-```cpp
-class Mutation {
-public:
-  Mutation(ConfigCache* config, ConfigCache* memory_only_config);
-  void Add(MutationEntry entry);  // 添加一个变更条目
-  void Commit();                  // 原子提交所有pending变更
-
-private:
-  ConfigCache* config_;
-  ConfigCache* memory_only_config_;
-  std::queue<MutationEntry> normal_config_entries_;       // 持久化配置变更队列
-  std::queue<MutationEntry> memory_only_config_entries_;  // 仅内存配置变更队列
-};
-
-class MutationEntry {
-public:
-  enum EntryType { SET, REMOVE_PROPERTY, REMOVE_SECTION };
-  enum PropertyType { NORMAL, MEMORY_ONLY };
-
-  // 模板型Set方法 —— 支持int/enum/bool/string/Serializable/vector<Serializable>
-  template<typename T> static MutationEntry Set(PropertyType, section, property, value);
-  static MutationEntry Remove(PropertyType, section);           // REMOVE_SECTION
-  static MutationEntry Remove(PropertyType, section, property); // REMOVE_PROPERTY
-};
-```
-
-#### 使用示例：
-
-```cpp
-// 获取Mutation句柄
+// 典型使用模式
 auto mutation = storage_module->Modify();
-
-// 添加多个变更操作
-mutation.Add(device.SetClassOfDevice(cod_value));
-mutation.Add(device.Classic().SetLinkKey(peer_link_key));
-mutation.Add(device.Classic().SetLinkKeyType(link_key_type));
-
-// 一次性原子提交 —— ConfigCache::Commit() 持锁处理所有变更
-mutation.Commit();
-
+mutation.Add(device.SetClassOfDevice(cod_value));     // MutationEntry{SET, NORMAL, ...}
+mutation.Add(device.Classic().SetLinkKey(peer_key));  // MutationEntry{SET, NORMAL, ...}
+mutation.Add(device.Classic().SetLinkKeyType(type));  // MutationEntry{SET, NORMAL, ...}
+mutation.Commit();  // ConfigCache::Commit() 持锁处理所有变更
 // Commit后 → PersistentConfigChangedCallback → SaveDelayed() → 3秒后写磁盘
 ```
 
-**Mutation的价值**：
-- 原子性：Commit()过程中持有 `recursive_mutex`，中间状态不会被读线程看到
-- 类型安全：Set<T>模板 + `std::enable_if` SFINAE，编译期检查类型合法性
-- 分离Normal/MemoryOnly：持久配置变更自动触发写磁盘；内存变更不持久化
-
 ---
 
-### 1.6 ConfigCacheHelper — 类型安全配置包装器
+### 流程4：Device宏驱动属性生成
 
-[ConfigCacheHelper](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache_helper.h#L39-L151) 在 ConfigCache（仅支持string Get/Set）之上提供类型化访问。
-
-**支持的Get<T>模板特化**：
-
-| T | 实现方式 |
-|---|----------|
-| 有符号整数 (int, int64_t, ...) | GetInt64 → 范围检查 → static_cast |
-| 无符号整数 (uint32_t, ...) | GetUint64 → 范围检查 → static_cast |
-| std::string | 透传 GetProperty |
-| std::vector<uint8_t> | GetBin |
-| bool | GetBool |
-| Serializable<T> | GetProperty → T::FromLegacyConfigString() |
-| 枚举类型 | GetProperty → FromLegacyConfigString<T>() |
-| vector<Serializable<T::value_type>> | StringSplit(" ") → 逐个 FromLegacyConfigString |
-
-**范围安全性**：
 ```cpp
-template<typename T>
-std::optional<T> Get(const std::string& section, const std::string& property) {
-  auto value = GetInt64(section, property);  // 底层存int64
-  if (!value) return std::nullopt;
-  if (!common::IsNumberInNumericLimits<T>(*value)) return std::nullopt;
-  return static_cast<T>(*value);  // 安全截断
-}
-```
+// device.h:L50-L61 标准属性宏 — 生成Get/Set/Remove三件套
+#define GENERATE_PROPERTY_GETTER_SETTER_REMOVER(NAME, RETURN_TYPE, PROPERTY_KEY)  \  // 💡C++: 宏代码生成, Java无宏, 用注解处理器(Annotation Processor)替代
+public:                                                                           \
+  std::optional<RETURN_TYPE> Get##NAME() const {  // 💡C++: std::optional表示可选值(可能无值), const成员函数不修改对象                                  \
+    return ConfigCacheHelper(*config_).Get<RETURN_TYPE>(section_, PROPERTY_KEY);  \
+  }                                                                               \
+  MutationEntry Set##NAME(const RETURN_TYPE& value) {                             \
+    return MutationEntry::Set<RETURN_TYPE>(MutationEntry::PropertyType::NORMAL,   \
+                                           section_, PROPERTY_KEY, value);        \
+  }                                                                               \
+  MutationEntry Remove##NAME() {                                                  \
+    return MutationEntry::Remove(MutationEntry::PropertyType::NORMAL,             \
+                                 section_, PROPERTY_KEY);                         \
+  }
 
----
+// device.h:L72-L85 自定义Setter宏 — DeviceType使用OR累加
+#define GENERATE_PROPERTY_GETTER_SETTER_REMOVER_WITH_CUSTOM_SETTER(NAME, RETURN_TYPE, \
+    PROPERTY_KEY, FUNC)                                                                \
+public:                                                                                \
+  std::optional<RETURN_TYPE> Get##NAME() const { ... }                                 \
+  MutationEntry Set##NAME(const RETURN_TYPE& value) {                                  \
+    auto new_value = [this](const RETURN_TYPE& value) -> RETURN_TYPE FUNC(value);      \
+    return MutationEntry::Set<RETURN_TYPE>(..., new_value);                            \
+  }                                                                                    \
+  MutationEntry Remove##NAME() { ... }
 
-### 1.7 存储持久化架构总结
+// device.h:L97-L109 临时属性宏 — 仅存memory_only_config，重启丢失
+#define GENERATE_TEMP_PROPERTY_GETTER_SETTER_REMOVER(NAME, RETURN_TYPE, PROPERTY_KEY) \
+public:                                                                               \
+  std::optional<RETURN_TYPE> GetTemp##NAME() const {                                  \
+    return ConfigCacheHelper(*memory_only_config_).Get<RETURN_TYPE>(section_, ...);   \
+  }                                                                                   \
+  MutationEntry SetTemp##NAME(const RETURN_TYPE& value) {                             \
+    return MutationEntry::Set<RETURN_TYPE>(MutationEntry::PropertyType::MEMORY_ONLY,  \
+                                           section_, PROPERTY_KEY, value);            \
+  }                                                                                   \
+  MutationEntry RemoveTemp##NAME() { ... }
 
-```
-ConfigCache (内存)                     LegacyConfigFile (磁盘)
-┌─────────────────────────────┐       ┌─────────────────────┐
-│  information_sections_      │───→   │ [Info]              │
-│    {section→{key→value}}    │       │ TimeCreated=...     │
-│                             │       │                     │
-│  persistent_devices_        │───→   │ [AA:BB:CC:DD:EE:FF] │
-│    {MAC→{LinkKey=..., ...}} │       │ LinkKey=...         │
-│                             │       │ DevType=1           │
-│  temporary_devices_ (LRU)   │  ❌   │ Name=MyCar          │
-│    {RandomMAC→{Name=...}}   │(不写) │                     │
-└─────────────────────────────┘       └─────────────────────┘
-         ↑ 变更触发 ↑                       ↑ 序列化 ↑
-    PersistentConfigChanged    ──→    SaveDelayed (3s防抖)
-        Callback                      SaveImmediately
-```
+// Device类使用示例 (device.h:L196-L224)
+class Device {
+public:
+  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(Name, std::string, BTIF_STORAGE_KEY_NAME);
+  // → GetName() / SetName() / RemoveName()
 
----
+  GENERATE_PROPERTY_GETTER_SETTER_REMOVER_WITH_CUSTOM_SETTER(
+    DeviceType, hci::DeviceType, BTIF_STORAGE_KEY_DEV_TYPE, {
+      return static_cast<hci::DeviceType>(value |
+          GetDeviceType().value_or(hci::DeviceType::UNKNOWN));  // OR累加：BR_EDR|DUAL
+    });
+  // → GetDeviceType() / SetDeviceType(OR运算) / RemoveDeviceType()
 
-## 2. GD Crypto Toolbox
-
-### 2.1 模块架构
-
-```
-crypto_toolbox/
-├── aes.h / aes.cc        ← Brian Gladman AES-128/256实现 (纯8-bit操作)
-├── aes_cmac.cc           ← AES-CMAC (基于AES-128的CBC-MAC)
-└── crypto_toolbox.h/cc   ← 蓝牙SMP安全函数 (c1, s1, f4, f5, f6, g2, h6, h7)
-```
-
-**源码文件**：[crypto_toolbox.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.h)，[crypto_toolbox.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.cc)
-
----
-
-### 2.2 AES实现 ([aes.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes.h))
-
-采用 **Brian Gladman** 的经典AES实现，特点：**纯8-bit字节操作加密状态**（`uint_8t`），不依赖硬件加速。
-
-**编译选项（全部开启）**：
-```cpp
-#define AES_ENC_PREKEYED  // 预计算密钥表加密
-#define AES_DEC_PREKEYED  // 预计算密钥表解密
-#define AES_ENC_128_OTFK  // On-The-Fly 128-bit key加密
-#define AES_DEC_128_OTFK  // On-The-Fly 128-bit key解密
-#define AES_ENC_256_OTFK  // On-The-Fly 256-bit key加密
-#define AES_DEC_256_OTFK  // On-The-Fly 256-bit key解密
-```
-
-**两种密钥模式**：
-
-| 模式 | 描述 | 适用场景 |
-|------|------|---------|
-| **PREKEYED** | 先调用 `aes_set_key()` 预计算密钥表，后续加解密快速 | 重复使用同一密钥（如批量数据加解密） |
-| **OTFK (On The Fly)** | 每次加解密时动态计算密钥表，返回解密所需密钥 | 一次性操作（蓝牙配对多为一次性密钥） |
-
-**核心API**：
-```cpp
-// 预计算模式
-return_type aes_set_key(const unsigned char key[], length_type keylen, aes_context ctx[1]);
-return_type aes_encrypt(const unsigned char in[16], unsigned char out[16], const aes_context ctx[1]);
-return_type aes_decrypt(const unsigned char in[16], unsigned char out[16], const aes_context ctx[1]);
-
-// OTFK模式 — 同时返回解密密钥
-void aes_encrypt_128(const unsigned char in[16], unsigned char out[16],
-                     const unsigned char key[16], uint_8t o_key[16]);
+  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(ServiceUuids, std::vector<hci::Uuid>, ...);
+  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(MetricsId, int, "MetricsId");
+  GENERATE_PROPERTY_GETTER_SETTER_REMOVER(PinLength, int, "PinLength");
+};
 ```
 
 ---
 
-### 2.3 蓝牙SMP安全函数链
-
-[crypto_toolbox.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.cc) 实现了蓝牙核心规范定义的完整安全函数。
-
-#### 基础加密原语：
+### 流程5：Crypto SMP安全函数链 — f5 LTK生成
 
 ```cpp
-Octet16 aes_128(const Octet16& key, const Octet16& message);      // AES-128加密
-Octet16 aes_cmac(const Octet16& key, const uint8_t* msg, uint16_t len);  // AES-CMAC签名
-Octet16 h6(const Octet16& w, std::array<uint8_t, 4> keyid);       // W → aes_cmac(W, keyID)
-Octet16 h7(const Octet16& salt, const Octet16& w);                // W → aes_cmac(salt, W)
-```
-
-#### SMP安全函数及其用途：
-
-| 函数 | 签名 | 蓝牙规范用途 | 算法要点 |
-|------|------|-------------|---------|
-| **c1** | `c1(k, r, pres, preq, iat, ia, rat, ra) → Octet16` | **配对确认值** (Pairing Confirm) | r ← p1 XOR; p1bis = aes_128(k, p1); p2 ← p1bis XOR; → aes_128(k, p2) |
-| **s1** | `s1(k, r1, r2) → Octet16` | **STK生成** (Secure Temporary Key) | 取r1前半+r2后半拼接 → aes_128(k, text) |
-| **f4** | `f4(U, V, X, Z=0) → Octet16` | **DHKey Check** — 验证双方拥有相同DHKey | msg = Z‖V‖U → aes_cmac(X, msg) |
-| **f5** | `f5(W, N1, N2, A1, A2, *mac_key, *ltk)` | **LTK与MAC Key生成** (LE Legacy配对) | T = aes_cmac(salt, W); counter=0→MAC_Key; counter=1→LTK |
-| **f6** | `f6(W, N1, N2, R, IOcap, A1, A2) → Octet16` | **配对确认/检查值** (LE Secure Connections) | msg = A2‖A1‖IOcap‖R‖N2‖N1 → aes_cmac(W, msg) |
-| **g2** | `g2(U, V, X, Y) → uint32_t` | **配对6位数字比较值** | msg = Y‖V‖U → aes_cmac(X, msg) → le32 → mod 1000000 (取低6位) |
-| **h6** | `h6(W, keyID) → Octet16` | **密钥推导** — 从主密钥派生子密钥 | aes_cmac(W, keyID) |
-| **h7** | `h7(salt, W) → Octet16` | **密钥推导** — 带salt的密钥派生 | aes_cmac(salt, W) |
-
-#### f5详细流程（LTK+MAC Key生成）：
-
-```cpp
+// crypto_toolbox.cc — f5: LE Secure Connections的LTK+MAC Key生成
 void f5(const uint8_t* w, const Octet16& n1, const Octet16& n2,
         uint8_t* a1, uint8_t* a2, Octet16* mac_key, Octet16* ltk) {
-  // Step 1: T = aes_cmac(salt, W)
+  // Step 1: 计算中间密钥 T = aes_cmac(salt, W)
+  //   salt是蓝牙规范定义的固定值
   const Octet16 salt{0xBE, 0x83, 0x60, 0x5A, 0xDB, 0x0B, 0x37, 0x60,
                      0x38, 0xA5, 0xF5, 0xAA, 0x91, 0x83, 0x88, 0x6C};
   Octet16 t = aes_cmac(salt, w, kOctet32Length);
 
-  const uint8_t key_id[4] = {0x65, 0x6c, 0x74, 0x62}; // "btle"小端
-  const uint8_t length[2] = {0x00, 0x01};              // 0x0100
+  const uint8_t key_id[4] = {0x65, 0x6c, 0x74, 0x62};  // "btle"小端
+  const uint8_t length[2] = {0x00, 0x01};                // 0x0100 = 256 bits
 
   // Step 2: counter=0 → MAC_Key = aes_cmac(T, 0‖keyID‖N1‖N2‖A1‖A2‖Length)
   *mac_key = calculate_mac_key_or_ltk(t, 0, key_id, n1, n2, a1, a2, length);
@@ -457,439 +386,371 @@ void f5(const uint8_t* w, const Octet16& n1, const Octet16& n2,
   // Step 3: counter=1 → LTK = aes_cmac(T, 1‖keyID‖N1‖N2‖A1‖A2‖Length)
   *ltk = calculate_mac_key_or_ltk(t, 1, key_id, n1, n2, a1, a2, length);
 }
-```
 
-#### g2 — 6位数字验证码：
-
-```cpp
+// g2: 6位数字验证码（Numeric Comparison配对）
 uint32_t g2(const uint8_t* u, const uint8_t* v, const Octet16& x, const Octet16& y) {
   // msg = Y ‖ V ‖ U (共80字节)
   Octet16 cmac = aes_cmac(x, msg);
-  // vres = cmac的低32位 mod 1,000,000 → 6位数字
-  return le32toh(*(uint32_t*)cmac.data()) % 1000000;
+  // 取CMAC低32位，模1,000,000 → 6位数字
+  return le32toh(*(uint32_t*)cmac.data()) % 1000000;  // 💡C++: C风格强制转换+指针解引用, Java用ByteBuffer.getInt()
+}
+
+// Key转换: LTK ↔ LinkKey (Dual Mode设备)
+Octet16 ltk_to_link_key(const Octet16& ltk, bool use_h7) {
+  Octet16 ilk;
+  if (use_h7) {
+    ilk = h7("1pmt...", ltk);     // h7路径：带salt的密钥派生
+  } else {
+    ilk = h6(ltk, "tmp1");        // h6路径：标准密钥推导
+  }
+  return h6(ilk, "lebr");         // 最终推导出LinkKey
+}
+
+Octet16 link_key_to_ltk(const Octet16& link_key, bool use_h7) {
+  Octet16 iltk;
+  if (use_h7) {
+    iltk = h7("2pmt...", link_key);
+  } else {
+    iltk = h6(link_key, "tmp2");
+  }
+  return h6(iltk, "brle");        // 最终推导出LTK
 }
 ```
 
-**车载场景意义**：g2生成的6位数字比较值就是用户在手机和车机上看到的**配对PIN码**，双方比较一致才确认配对。
+**车载场景**：g2生成的6位数字比较值就是用户在手机和车机上看到的**配对PIN码**。LTK↔LinkKey转换在Dual Mode设备（同时使用BR/EDR的A2DP/HFP和BLE的GATT/手机互联）中至关重要。
 
 ---
 
-### 2.4 Key转换 — LE ↔ Classic
+### 流程6：ConfigCacheHelper类型安全Get\<T\>
 
 ```cpp
-Octet16 ltk_to_link_key(const Octet16& ltk, bool use_h7);  // LE LTK → Classic LinkKey
-Octet16 link_key_to_ltk(const Octet16& link_key, bool use_h7);  // Classic LinkKey → LE LTK
-```
+// config_cache_helper.h:L65-L147 — 7种模板特化
 
-**转换路径**：
-```
-ltk_to_link_key:
-  if (use_h7): ILK = h7("1pmt...", ltk)
-  else:         ILK = h6(ltk, "tmp1")
-  LinkKey = h6(ILK, "lebr")
+// 特化1: 有符号整数 — GetInt64 → 范围检查 → static_cast
+template<typename T, std::enable_if<std::is_signed_v<T> && std::is_integral_v<T>>>
+std::optional<T> Get(const std::string& section, const std::string& property) {
+  auto value = GetInt64(section, property);
+  if (!value) return std::nullopt;
+  if (!common::IsNumberInNumericLimits<T>(*value)) return std::nullopt;  // 防溢出
+  return static_cast<T>(*value);
+}
 
-link_key_to_ltk:
-  if (use_h7): ILTK = h7("2pmt...", link_key)
-  else:         ILTK = h6(link_key, "tmp2")
-  LTK = h6(ILTK, "brle")
-```
+// 特化2: 无符号整数 — GetUint64 → 范围检查 → static_cast
+template<typename T, std::enable_if<std::is_unsigned_v<T> && std::is_integral_v<T>>>
+std::optional<T> Get(...) { /* 同上，用GetUint64 */ }
 
-**车载意义**：车机连接手机时可能同时使用BR/EDR（A2DP/HFP）和BLE（GATT/手机互联），需要在LE生成的LTK和Classic需要的LinkKey之间互相转换。在Dual Mode设备场景中至关重要。
+// 特化3: std::string — 透传GetProperty
+template<typename T, std::enable_if<std::is_same_v<T, std::string>>>
+std::optional<T> Get(...) { return config_cache_.GetProperty(section, property); }
 
----
+// 特化4: std::vector<uint8_t> — GetBin
+template<typename T, std::enable_if<std::is_same_v<T, std::vector<uint8_t>>>>
+std::optional<T> Get(...) { return GetBin(section, property); }
 
-## 3. GD Common 工具
+// 特化5: bool — GetBool
+template<typename T, std::enable_if<std::is_same_v<T, bool>>>
+std::optional<T> Get(...) { return GetBool(section, property); }
 
-### 3.1 BidiQueue — 双向通信队列
+// 特化6: Serializable<T> — GetProperty → T::FromLegacyConfigString()
+template<typename T, std::enable_if<std::is_base_of_v<Serializable<T>, T>>>
+std::optional<T> Get(...) {
+  auto value = config_cache_.GetProperty(section, property);
+  if (!value) return std::nullopt;
+  return T::FromLegacyConfigString(*value);  // 类型自定义反序列化
+}
 
-[BidiQueue](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/bidi_queue.h) 是GD架构**层次间数据通信的核心数据结构**。
-
-```cpp
-template <typename TUP, typename TDOWN>
-class BidiQueue {
-public:
-  BidiQueueEnd<TDOWN, TUP>* GetUpEnd();    // 上层端点
-  BidiQueueEnd<TUP, TDOWN>* GetDownEnd();  // 下层端点
-
-private:
-  os::Queue<TUP>    up_queue_;     // 上行: 下层→→→→→→→上层 (数据向上)
-  os::Queue<TDOWN>  down_queue_;   // 下行: 上层→→→→→→→下层 (数据向下)
-  BidiQueueEnd<TDOWN, TUP>   up_end_;   // 上层看到的TX=down_queue, RX=up_queue
-  BidiQueueEnd<TUP, TDOWN>    down_end_; // 下层看到的TX=up_queue, RX=down_queue
-};
-```
-
-**数据流向图解**：
-
-```
-    上层 (Host)
-      │  RX: 从 up_queue_ 取   TX: 写入 down_queue_
-      │
-  ┌───┴──────────────┐
-  │  BidiQueueEnd    │  ← up_end_ (上端点)
-  │  TX=down_queue   │
-  │  RX=up_queue     │
-  └──────────────────┘
-         │  │
-  up_queue(TUP)  down_queue(TDOWN)
-         │  │
-  ┌──────┴──┴────────┐
-  │  BidiQueueEnd    │  ← down_end_ (下端点)
-  │  TX=up_queue     │
-  │  RX=down_queue   │
-  └──────────────────┘
-      │
-    下层 (Controller)
-      │  RX: 从 down_queue_ 取   TX: 写入 up_queue_
-```
-
-**在GD中的使用**：
-- **HCI Layer ↔ ACL Manager**：ACL数据包双向传递
-- **HCI Layer ↔ SCO Manager**：SCO音频数据双向传递
-- **L2CAP ↔ HCI Layer**：L2CAP PDU双向封装/解封装
-
-```cpp
-// BidiQueueEnd提供注册回调机制
-void RegisterEnqueue(os::Handler* handler, EnqueueCallback callback);  // 有数据可发送时回调
-void RegisterDequeue(os::Handler* handler, DequeueCallback callback);  // 有新数据到达时回调
-std::unique_ptr<TDEQUEUE> TryDequeue();  // 非阻塞取数据
-```
-
----
-
-### 3.2 BlockingQueue — 阻塞队列
-
-[BlockingQueue](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/blocking_queue.h#L28-L74) 基于 `std::condition_variable` 实现线程安全的生产者-消费者模式。
-
-```cpp
-template <typename T>
-class BlockingQueue {
-public:
-  void push(T data) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    queue_.push(std::move(data));
-    if (queue_.size() == 1) not_empty_.notify_all();  // 仅首次push通知
+// 特化7: vector<Serializable> — StringSplit(" ") → 逐个FromLegacyConfigString
+template<typename T, std::enable_if<is_specialization_of<T, std::vector> &&
+    std::is_base_of_v<Serializable<typename T::value_type>, typename T::value_type>>>
+std::optional<T> Get(...) {
+  auto value = config_cache_.GetProperty(section, property);
+  if (!value) return std::nullopt;
+  auto values = common::StringSplit(*value, " ");
+  T result;
+  for (const auto& str : values) {
+    auto v = T::value_type::FromLegacyConfigString(str);
+    if (!v) return std::nullopt;
+    result.push_back(*v);
   }
-
-  T take() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    while (queue_.empty()) not_empty_.wait(lock);  // 阻塞等待
-    T data = queue_.front(); queue_.pop();
-    return data;
-  }
-
-  bool wait_to_take(std::chrono::milliseconds time) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    while (queue_.empty()) {
-      if (not_empty_.wait_for(lock, time) == std::cv_status::timeout) return false;
-    }
-    return true;
-  }
-};
-```
-
-**关键设计**：
-- `push` 只在队列从空变为非空时 `notify_all()`（而非每次都通知）
-- `take` 阻塞等待直到有数据
-- `wait_to_take` 带超时的等待，用于优雅关闭
-
----
-
-### 3.3 CircularBuffer — 环形缓冲区
-
-[CircularBuffer](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/circular_buffer.h) 基于 `std::deque` 实现固定大小的环形缓冲区。
-
-```cpp
-template <typename T>
-class CircularBuffer {
-public:
-  explicit CircularBuffer(size_t size);
-  void Push(T item);                   // Push+自动淘汰旧元素
-  std::vector<T> Pull() const;        // 快照拷贝，不清理
-  std::vector<T> Drain();             // Move取出并清空
-
-private:
-  const size_t size_;
-  std::deque<T> queue_;
-  mutable std::mutex mutex_;
-};
-
-// Push实现 → 超过size自动pop_front
-template <typename T>
-void CircularBuffer<T>::Push(const T item) {
-  std::unique_lock<std::mutex> lock(mutex_);
-  queue_.push_back(item);
-  while (queue_.size() > size_) queue_.pop_front();
+  return result;
 }
 ```
 
-**派生类 — TimestampedCircularBuffer**：
-
-```cpp
-template <typename T>
-struct TimestampedEntry {
-  uint64_t timestamp;
-  T entry;
-};
-
-template <typename T>
-class TimestampedCircularBuffer : public CircularBuffer<TimestampedEntry<T>> {
-  void Push(T item) {
-    TimestampedEntry<T> entry{timestamper_->GetTimestamp(), item};
-    CircularBuffer<TimestampedEntry<T>>::Push(entry);
-  }
-};
-```
-
-**实用场景**：`TimestampedStringCircularBuffer` — 带时间戳的日志环形缓冲区，Push时自动截断到255字符。在Snoop Logger和调试日志中常用。
-
 ---
 
-### 3.4 LruCache — LRU缓存
+## 💡 C++知识卡片
 
-[LruCache](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/lru_cache.h#L34-L198) 实现**最近最少使用淘汰策略**的键值缓存。
+### 卡片1：SFINAE与std::enable_if — 编译期类型分发
 
-```cpp
-template <typename Key, typename T>
-class LruCache {
-public:
-  explicit LruCache(size_t capacity);  // capacity不能为0（assert检查）
-
-  // find/contains 会 "预热" key → 将key移到List头部
-  iterator find(const Key& key);
-  bool contains(const Key& key) const;
-
-  // insert_or_assign → key存在则更新值；不存在则插入头部，capacity满则淘汰尾部
-  std::optional<node_type> insert_or_assign(const Key& key, T value);
-
-  // try_emplace → 原地构造value，key已存在则返回false不覆盖
-  std::tuple<iterator, bool, std::optional<node_type>> try_emplace(const Key& key, Args&&...);
-
-  std::optional<node_type> extract(const Key& key);
-  iterator erase(const_iterator iter);
-
-private:
-  size_t capacity_;
-  ListMap<Key, T> list_map_;  // List → 保持插入/访问顺序；Map → O(1)查找
-};
-```
-
-**LRU语义**：
-- `find(key)` → 将key移到List头部（warm up）
-- `insert_or_assign(key, val)` → key存在则更新值并移到头部；不存在且capacity满则淘汰List尾部
-- 遍历不会warm up key；`splice`操作不触发warm up
-
-**在Storage中的使用**：`ConfigCache::temporary_devices_` 使用LruCache管理临时设备，上限10000。
-
----
-
-### 3.5 Callback / Bind — Chromium回调封装
+ConfigCacheHelper的 `Get<T>()` 和 MutationEntry的 `Set<T>()` 都使用了 **SFINAE (Substitution Failure Is Not An Error)** 技术实现编译期类型分发：
 
 ```cpp
-// callback.h
-using base::Callback;       // 可多次调用的回调
-using base::Closure;        // 无参数的Callback<void()>
-using base::OnceCallback;   // 只能调用一次的回调
-using base::OnceClosure;    // 无参数的OnceCallback<void()>
-```
+// MutationEntry::Set 的6种重载（mutation_entry.h:L34-L92）
 
-GD的异步编程模型**大量依赖chromium base库的回调机制**：
-- `Callback` → 可拷贝，多次调用
-- `OnceCallback` → 只可移动，调用一次后失效（更安全）
-
----
-
-### 3.6 StopWatch — 性能计时器
-
-[StopWatch](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/stop_watch.h#L23-L64) 用于**HCI HAL收发性能测量**。
-
-```cpp
-class StopWatch {
-public:
-  static StopWatchBuffer hciHalTxBuffer_;  // HCI发送性能缓冲
-  static StopWatchBuffer hciHalRxBuffer_;  // HCI接收性能缓冲
-
-  StopWatch(StopWatchBuffer& buffer, std::string text);  // 构造时记录start
-  ~StopWatch();  // 析构时记录end → 写入buffer
-};
-
-struct StopWatchLog {
-  std::chrono::system_clock::time_point timestamp;       // 发生时间
-  std::chrono::high_resolution_clock::time_point start_timestamp;
-  std::chrono::high_resolution_clock::time_point end_timestamp;
-  std::string message;
-};
-```
-
-**使用方式（RAII自动计时）**：
-```cpp
-void HciHalImpl::send_hci_command(...) {
-  StopWatch stop_watch(StopWatch::hciHalTxBuffer_, "HCI CMD: " + bytes);
-  // ... 发送操作 ...
-}  // stop_watch析构 → 自动记录耗时
-```
-
----
-
-### 3.7 其他Common工具一览
-
-| 文件 | 功能 | 要点 |
-|------|------|------|
-| [contextual_callback.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/contextual_callback.h) | 绑定到执行上下文的回调 | `ContextualOnceCallback` / `ContextualCallback`，调用时通过 `IPostableContext::Post()` 投递 |
-| [strings.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/strings.h) | 字符串工具 | ToHexString/FromHexString/StringTrim/StringSplit/StringJoin/StringFormat |
-| [numbers.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/numbers.h) | 数值范围检查 | `IsNumberInNumericLimits<T>` 模板 |
-| [type_helper.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/type_helper.h) | 类型特征 | `is_specialization_of<T, Template>` — 判断是否某模板的特化 |
-| [byte_array.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/byte_array.h) | 固定字节数组 | 继承 `packet::CustomFieldFixedSizeInterface` + `storage::Serializable` |
-| [multi_priority_queue.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/multi_priority_queue.h) | 多优先级队列 | 高优先级项优先出队 |
-| [sync_map_count.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/sync_map_count.h) | 线程安全计数Map | 支持按计数排序 |
-| [audit_log.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/audit_log.h) | 连接审计日志 | 记录蓝牙连接历史 |
-
----
-
-## 4. GD Metrics — 蓝牙性能度量
-
-[Metrics](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/metrics/metrics.h#L24-L53) 提供**蓝牙全生命周期度量日志接口**，用于统计分析和性能监控。
-
-```cpp
-namespace bluetooth::metrics {
-
-// 适配器状态变化 (ON/OFF/TURNING_ON/TURNING_OFF)
-void LogMetricsAdapterStateChanged(uint32_t state);
-
-// 配对创建尝试
-void LogMetricsBondCreateAttempt(RawAddress* addr, uint32_t device_type);
-
-// 配対状态变化 (包括失败原因)
-void LogMetricsBondStateChanged(RawAddress* addr, uint32_t device_type,
-  uint32_t status, uint32_t bond_state, int32_t fail_reason);
-
-// 设备信息上报 (CoD/Appearance/Vendor/Product/Version)
-void LogMetricsDeviceInfoReport(RawAddress* addr, uint32_t device_type,
-  uint32_t class_of_device, uint32_t appearance, uint32_t vendor_id,
-  uint32_t vendor_id_src, uint32_t product_id, uint32_t version);
-
-// Profile连接状态变化 (A2DP/HFP/AVRCP/HID/...)
-void LogMetricsProfileConnectionStateChanged(RawAddress* addr,
-  uint32_t profile, uint32_t status, uint32_t state);
-
-// ACL连接尝试
-void LogMetricsAclConnectAttempt(RawAddress* addr, uint32_t acl_state);
-
-// ACL连接状态变化 (transport/status/state/direction/hci_reason)
-void LogMetricsAclConnectionStateChanged(RawAddress* addr, uint32_t transport,
-  uint32_t status, uint32_t acl_state, uint32_t direction, uint32_t hci_reason);
-
-// 芯片信息上报
-void LogMetricsChipsetInfoReport();
-
-// Suspend Id状态
-void LogMetricsSuspendIdState(uint32_t state);
-
-// LE隐私状态 (llp_state + rpa_state)
-void LogMetricsLLPrivacyState(uint32_t llp_state, uint32_t rpa_state);
-
-// Mmc转码RTT统计 (max_rtt/mean_rtt/num_requests/codec_type)
-void LogMetricMmcTranscodeRttStats(int maximum_rtt, double mean_rtt,
-  int num_requests, int codec_type);
-
+// 重载1: 整数类型 → std::to_string
+template<typename T, typename std::enable_if<std::is_integral_v<T>, int>::type = 0>
+static MutationEntry Set(PropertyType, string section, string property, T value) {
+  return Set(property_type, section, property, std::to_string(value));
 }
+
+// 重载2: 枚举类型 → 转底层整数再调用重载1
+template<typename T, typename std::enable_if<std::is_enum_v<T>, int>::type = 0>
+static MutationEntry Set(PropertyType, string section, string property, T value) {
+  using Underlying = typename std::underlying_type_t<T>;
+  return Set<Underlying>(property_type, section, property, static_cast<Underlying>(value));
+}
+
+// 重载3: bool → common::ToString
+// 重载4: std::string → 透传
+// 重载5: Serializable<T> → ToLegacyConfigString()
+// 重载6: vector<Serializable> → 逐个ToLegacyConfigString + " "拼接
 ```
 
-**Metrics监控维度总结**：
-
-| 监控维度 | 函数 | 车载关注点 |
-|---------|------|------------|
-| **适配器状态** | LogMetricsAdapterStateChanged | 蓝牙开关频率/异常关机 |
-| **配对事件** | LogMetricsBondCreateAttempt + BondStateChanged | 配对成功率/失败原因分布 |
-| **设备信息** | LogMetricsDeviceInfoReport | 连接设备类型统计（手机/手表/OBD...） |
-| **Profile连接** | LogMetricsProfileConnectionStateChanged | A2DP/HFP连接成功率 |
-| **ACL连接** | LogMetricsAclConnectionStateChanged | 底层连接异常（HCI reason） |
-| **芯片信息** | LogMetricsChipsetInfoReport | 芯片型号/固件版本 |
-| **LE隐私** | LogMetricsLLPrivacyState | LE RPA旋转频率 |
-| **音频转码** | LogMetricMmcTranscodeRttStats | Mmc转码延迟（车载WBS/SWB） |
+**SFINAE原理**：当编译器尝试模板替换时，如果 `std::enable_if<条件>` 的条件为false，则该重载从候选集中移除（不是错误），编译器选择其他匹配的重载。这实现了**编译期类型安全**——不支持的类型直接编译失败。
 
 ---
 
-## 5. 对车载开发的启示
+### 卡片2：PIMPL惯用法与recursive_mutex — 线程安全与编译防火墙
 
-### 5.1 Storage相关
+```cpp
+// storage_module.h:L185-L188
+class StorageModule {
+private:
+  struct impl;                          // 前向声明，隐藏实现细节
+  mutable std::recursive_mutex mutex_;  // 可重入锁，同线程可多次加锁
+  std::unique_ptr<impl> pimpl_;         // PIMPL指针
+};
 
-| 场景 | 建议 |
-|------|------|
-| **配对设备上限** | ConfigCache默认`temp_devices_capacity=10000`，但persistent_devices无硬上限。车载如需要限制配对数量，应在App层控制 |
-| **配置文件损坏** | StorageModule构造时会做checksum校验，不通过自动删除重建。切勿手动修改bt_config.conf |
-| **Factory Reset** | 设置 `persist.bluetooth.factoryreset=true` 然后重启蓝牙，配置自动清空 |
-| **LinkKey丢失** | `ClassicDevice::IsPaired()` 检查是否存在LinkKey属性。丢失会导致重新配对 |
+// storage_module.cc:L65-L74 实际定义
+struct StorageModule::impl {
+  explicit impl(Handler* handler, ConfigCache cache, size_t in_memory_cache_size_limit)
+      : config_save_alarm_(&handler->thread()),
+        cache_(std::move(cache)),
+        memory_only_cache_(in_memory_cache_size_limit, {}) {}
+  Alarm config_save_alarm_;
+  ConfigCache cache_;
+  ConfigCache memory_only_cache_;
+  bool has_pending_config_save_ = false;
+};
+```
 
-### 5.2 Crypto相关
+**PIMPL优势**：
+- **编译防火墙**：修改impl内部结构不需要重新编译使用StorageModule的代码
+- **减少头文件依赖**：Alarm/ConfigCache等实现细节不在头文件中暴露
+- **ABI稳定性**：改变impl大小不影响StorageModule的sizeof
 
-| 场景 | 建议 |
-|------|------|
-| **g2配对码验证** | 6位数字对比是配对安全的关键环节。如果车机和手机显示不同PIN码，说明中间人攻击（MITM） |
-| **LTK ↔ LinkKey转换** | Dual Mode设备（同时BR/EDR+LE）配对时，LTK和LinkKey需要正确转换。转换失败会导致BLE服务无法使用但Classic正常 |
-| **LE隐私地址** | LeDevice.PeerId存储IRK用于解析RPA。IRK丢失会导致无法识别已配对LE设备（每次显示为陌生设备） |
-
-### 5.3 Common工具在车载中的应用
-
-| 工具 | 车载场景 |
-|------|---------|
-| **BidiQueue** | HCI层→ACL管理器→L2CAP层之间，A2DP音频数据+HFP AT命令同时传递 |
-| **BlockingQueue** | SCO音频编解码线程 → HAL层写数据 |
-| **LruCache** | 临时设备列表（OBD/TPMS等频繁上下的IoT设备，避免占用持久存储） |
-| **StopWatch** | HCI HAL Tx/Rx延迟监控——车载芯片延迟排查关键工具 |
+**recursive_mutex vs mutex**：
+- `std::mutex`：同线程二次加锁 → **死锁**
+- `std::recursive_mutex`：同线程可多次加锁，需要相同次数解锁 → StorageModule中SaveDelayed可能被回调链间接调用自身，需要可重入
 
 ---
 
-## 6. 源码文件参考
+## 🗂️ Java↔C++对照表
+
+| 功能 | Java层 (Framework) | C/C++层 (GD/Btif) | 数据流 |
+|------|-------------------|-------------------|--------|
+| **配对设备列表** | `AdapterService.getBondedDevices()` → `BluetoothDevice[]` | `StorageModule.GetBondedDevices()` → `vector<Device>` | Java JNI → BtifConfig → GD Storage |
+| **设备属性读写** | `AdapterProperties.setAdapterProperty()` | `btif_storage_set_adapter_property()` → `StorageModule.SetProperty()` | Java → JNI → btif_core → GD Storage |
+| **远端设备属性** | `RemoteDevices.getDeviceProperties()` | `btif_storage_get_remote_device_property()` → `ConfigCacheHelper.Get<T>()` | Java → JNI → btif_storage → GD ConfigCache |
+| **LinkKey存储** | `BondStateMachine` → JNI `bondStateChangeCallback` | `ClassicDevice.SetLinkKey()` → `Mutation.Commit()` → `SaveDelayed()` | 配对完成 → SecurityManager → GD Storage |
+| **LE Key存储** | `GattService.onLeBondStateChanged` | `LeDevice.SetPeerEncryptionKeys()` / `SetPeerId()` | SMP配对完成 → LeSecurityManager → GD Storage |
+| **Factory Reset** | `AdapterService.factoryReset()` | `persist.bluetooth.factoryreset=true` → `StorageModule`构造时删除配置 | Java设置SystemProperty → 重启蓝牙进程 |
+| **设备名称** | `BluetoothDevice.setName()` | `Device.SetName()` → `MutationEntry::Set<string>` | Java → JNI → btif_profile_storage → GD Storage |
+| **配对状态回调** | `JniCallbacks.bondStateChangeCallback()` | `LogMetricsBondStateChanged()` + 上层回调 | C++ → JNI → Java Callback |
+| **Profile连接** | `A2dpService.connect()` | `LogMetricsProfileConnectionStateChanged()` | Java → JNI → BtifProfile → Metrics |
+| **加密Key转换** | 无直接Java API | `ltk_to_link_key()` / `link_key_to_ltk()` | 纯C++层，SecurityManager内部调用 |
+
+---
+
+## 🐛 问题排查SOP
+
+### SOP1：配对设备丢失
+
+```
+症状：已配对设备重启后消失
+排查步骤：
+1. 检查bt_config.conf是否存在LinkKey属性
+   → adb shell cat /data/misc/bluedroid/bt_config.conf | grep -A5 "AA:BB:CC:DD:EE:FF"
+2. 检查LinkKey属性是否在persistent_property_names_中
+   → Device::kLinkKeyProperties 包含 "LinkKey"
+3. 检查SaveDelayed是否被正确触发
+   → 日志搜索 "Storage module started" 确认初始化成功
+4. 检查是否有异常关机导致3秒防抖未写入
+   → 正常关机流程会调用析构函数 → SaveImmediately()
+5. 检查checksum校验是否误删配置
+   → 日志搜索 "is_config_checksum_pass"
+```
+
+### SOP2：LE设备无法识别（RPA问题）
+
+```
+症状：已配对LE设备每次连接显示为新设备
+排查步骤：
+1. 检查LeDevice.PeerId(IRK)是否存在
+   → bt_config.conf中搜索 "LE_KEY_PID"
+2. 检查IRK是否正确存储
+   → PeerId = IRK + Identity Address Type + Identity Address
+3. 检查LeIdentityAddress是否正确
+   → GetDeviceByLeIdentityAddress() 需要解析后的静态地址
+4. 检查RPA解析是否正常
+   → IRK丢失 → 无法解析RPA → 每次显示为陌生设备
+```
+
+### SOP3：Dual Mode设备BLE服务异常
+
+```
+症状：Classic(A2DP/HFP)正常但BLE(GATT)不通
+排查步骤：
+1. 检查DeviceType是否为DUAL
+   → bt_config.conf中搜索 "DevType"
+2. 检查LTK↔LinkKey转换是否成功
+   → ltk_to_link_key() / link_key_to_ltk() 调用日志
+3. 检查use_h7参数是否一致
+   → h6路径和h7路径产生不同结果，两端必须一致
+4. 检查LE_KEY_PENC(LTK)是否存在
+   → PeerEncryptionKeys = LTK + RAND + EDIV + Security Level + Key Length
+```
+
+### SOP4：配置文件损坏
+
+```
+症状：蓝牙启动后所有配对信息丢失
+排查步骤：
+1. 检查bt_config.conf文件是否存在
+   → adb shell ls -la /data/misc/bluedroid/bt_config.conf
+2. 检查文件内容是否合法INI格式
+   → 手动cat查看是否有截断/乱码
+3. 检查checksum校验
+   → Common Criteria模式下checksum不通过会自动删除重建
+4. 恢复方案
+   → 如有备份：adb push bt_config.conf.bak /data/misc/bluedroid/bt_config.conf
+   → 无备份：只能重新配对所有设备
+5. 预防
+   → 切勿手动修改bt_config.conf
+   → 确保正常关机（让SaveImmediately有机会执行）
+```
+
+---
+
+## 🛠️ 动手练习
+
+### 练习1：追踪一次完整配对的数据流
+
+**目标**：理解配对过程中Storage的写入链路
+
+1. 在 [storage_module.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.cc) 的 `SaveImmediately()` 添加日志打印当前cache中的section数量
+2. 配对一个新设备，观察日志中SaveDelayed→SaveImmediately的调用时序
+3. 检查bt_config.conf中新出现的section和属性
+
+**预期结果**：看到3秒防抖效果——配对过程中多次SetProperty只触发一次磁盘写入
+
+### 练习2：验证Mutation的原子性
+
+**目标**：理解Mutation Commit的原子保证
+
+1. 在 [mutation.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation.cc) 的 `Commit()` 前后加日志
+2. 构造一个包含3个MutationEntry的修改（SetName + SetLinkKey + SetLinkKeyType）
+3. 验证ConfigCache::Commit()是在recursive_mutex保护下逐条执行
+
+**思考题**：如果Commit()执行到第2条时崩溃，第1条是否已经生效？如何保证真正的原子性？
+
+### 练习3：分析LTK↔LinkKey转换路径
+
+**目标**：理解Dual Mode设备的密钥转换
+
+1. 阅读 [crypto_toolbox.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.cc) 中 `ltk_to_link_key()` 和 `link_key_to_ltk()` 的实现
+2. 画出h6路径和h7路径的完整调用链
+3. 用测试向量验证：给定一个LTK，计算两种路径产生的LinkKey是否不同
+
+**车载关联**：车机连接手机时，如果手机用LE配对但车机需要A2DP（Classic），就需要LTK→LinkKey转换
+
+### 练习4：ConfigCacheHelper类型安全验证
+
+**目标**：理解SFINAE模板分发机制
+
+1. 在 [config_cache_helper.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache_helper.h) 中追踪 `Get<int>()` 的完整调用链
+2. 尝试调用 `Get<float>()` —— 编译应该失败（无匹配特化）
+3. 验证 `IsNumberInNumericLimits<T>()` 的溢出保护：写入int64大值，用 `Get<int8_t>()` 读取应返回nullopt
+
+---
+
+## 📚 关键源码索引
 
 ### Storage模块 (20个文件)
 
-| 文件 | 路径 |
-|------|------|
-| storage_module.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.h) |
-| storage_module.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.cc) |
-| device.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/device.h) |
-| device.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/device.cc) |
-| classic_device.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/classic_device.h) |
-| classic_device.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/classic_device.cc) |
-| le_device.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/le_device.h) |
-| le_device.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/le_device.cc) |
-| config_cache.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache.h) |
-| config_cache.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache.cc) |
-| config_cache_helper.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache_helper.h) |
-| config_cache_helper.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache_helper.cc) |
-| mutation.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation.h) |
-| mutation.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation.cc) |
-| mutation_entry.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation_entry.h) |
-| mutation_entry.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation_entry.cc) |
-| legacy_config_file.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/legacy_config_file.h) |
-| legacy_config_file.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/legacy_config_file.cc) |
-| serializable.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/serializable.h) |
-| config_keys.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_keys.h) |
+| 文件 | 路径 | 核心内容 |
+|------|------|---------|
+| [storage_module.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.h) | gd/storage/ | StorageModule类 L49-L197 |
+| [storage_module.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/storage_module.cc) | gd/storage/ | 构造函数 L84-L138, SaveDelayed L166-L175, SaveImmediately L177-L198 |
+| [config_cache.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache.h) | gd/storage/ | ConfigCache类 L54-L157, 三分区 L144-L149 |
+| [config_cache.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache.cc) | gd/storage/ | Commit()实现, 持久化判定逻辑 |
+| [device.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/device.h) | gd/storage/ | Device类 L122-L224, 三套宏 L50-L109 |
+| [device.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/device.cc) | gd/storage/ | GetAddress/Classic/Le实现 |
+| [classic_device.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/classic_device.h) | gd/storage/ | ClassicDevice L31-L90, LinkKey/LinkKeyType |
+| [classic_device.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/classic_device.cc) | gd/storage/ | IsPaired/GetAddress实现 |
+| [le_device.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/le_device.h) | gd/storage/ | LeDevice L29-L92, PeerId/PeerEncKeys/PeerCSRK |
+| [le_device.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/le_device.cc) | gd/storage/ | IsPaired实现 |
+| [mutation.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation.h) | gd/storage/ | Mutation类 L26-L38 |
+| [mutation.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation.cc) | gd/storage/ | Add+Commit实现 |
+| [mutation_entry.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation_entry.h) | gd/storage/ | MutationEntry L28-L117, 6种Set重载 |
+| [mutation_entry.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/mutation_entry.cc) | gd/storage/ | 构造函数实现 |
+| [config_cache_helper.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache_helper.h) | gd/storage/ | ConfigCacheHelper L39-L151, 7种Get特化 |
+| [config_cache_helper.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_cache_helper.cc) | gd/storage/ | SetBool/GetBool等实现 |
+| [legacy_config_file.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/legacy_config_file.h) | gd/storage/ | INI格式读写 |
+| [legacy_config_file.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/legacy_config_file.cc) | gd/storage/ | Read/Write/Delete实现 |
+| [serializable.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/serializable.h) | gd/storage/ | Serializable CRTP基类 |
+| [config_keys.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/storage/config_keys.h) | gd/storage/ | 属性Key常量定义 |
 
 ### Crypto Toolbox模块 (5个文件)
 
-| 文件 | 路径 |
-|------|------|
-| crypto_toolbox.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.h) |
-| crypto_toolbox.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.cc) |
-| aes.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes.h) |
-| aes.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes.cc) |
-| aes_cmac.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes_cmac.cc) |
+| 文件 | 路径 | 核心内容 |
+|------|------|---------|
+| [crypto_toolbox.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.h) | gd/crypto_toolbox/ | SMP函数声明 L27-L49 |
+| [crypto_toolbox.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/crypto_toolbox.cc) | gd/crypto_toolbox/ | c1/s1/f4/f5/f6/g2/h6/h7实现 |
+| [aes.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes.h) | gd/crypto_toolbox/ | Gladman AES-128/256 |
+| [aes.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes.cc) | gd/crypto_toolbox/ | AES纯8-bit实现 |
+| [aes_cmac.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/crypto_toolbox/aes_cmac.cc) | gd/crypto_toolbox/ | AES-CMAC实现 |
 
-### Common工具模块 (4个核心文件)
+### Common工具模块 (6个核心文件)
 
-| 文件 | 路径 |
-|------|------|
-| bidi_queue.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/bidi_queue.h) |
-| blocking_queue.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/blocking_queue.h) |
-| circular_buffer.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/circular_buffer.h) |
-| lru_cache.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/lru_cache.h) |
-| callback.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/callback.h) |
-| stop_watch.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/stop_watch.h) |
+| 文件 | 路径 | 核心内容 |
+|------|------|---------|
+| [bidi_queue.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/bidi_queue.h) | gd/common/ | BidiQueue双向队列 |
+| [blocking_queue.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/blocking_queue.h) | gd/common/ | BlockingQueue L28-L74 |
+| [circular_buffer.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/circular_buffer.h) | gd/common/ | CircularBuffer环形缓冲 |
+| [lru_cache.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/lru_cache.h) | gd/common/ | LruCache L34-L198 |
+| [callback.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/callback.h) | gd/common/ | Chromium回调封装 |
+| [stop_watch.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/common/stop_watch.h) | gd/common/ | StopWatch L23-L64 |
 
 ### Metrics模块 (1个文件)
 
-| 文件 | 路径 |
-|------|------|
-| metrics.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/metrics/metrics.h) |
+| 文件 | 路径 | 核心内容 |
+|------|------|---------|
+| [metrics.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/gd/metrics/metrics.h) | gd/metrics/ | LogMetrics*接口 L24-L53 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | 📋 本章导读 — 五大核心收获表 | ✅ |
+| 2 | 🗺️ 架构全景图 — Storage三层架构 graph TD | ✅ |
+| 3 | 🗺️ 架构全景图 — Crypto函数链 graph LR | ✅ |
+| 4 | 🗺️ 架构全景图 — Mutation事务流程 sequenceDiagram | ✅ |
+| 5 | 🔍 代码导航表 — 含行号的完整导航 | ✅ |
+| 6 | 📖 核心流程1 — StorageModule初始化5步启动（逐行注释） | ✅ |
+| 7 | 📖 核心流程2 — 延迟保存3秒防抖（逐行注释） | ✅ |
+| 8 | 📖 核心流程3 — Mutation事务提交（逐行注释） | ✅ |
+| 9 | 📖 核心流程4 — Device宏驱动属性生成（逐行注释） | ✅ |
+| 10 | 📖 核心流程5 — Crypto f5 LTK生成（逐行注释） | ✅ |
+| 11 | 📖 核心流程6 — ConfigCacheHelper类型安全Get\<T\>（逐行注释） | ✅ |
+| 12 | 💡 C++知识卡片1 — SFINAE与std::enable_if | ✅ |
+| 13 | 💡 C++知识卡片2 — PIMPL与recursive_mutex | ✅ |
+| 14 | 🗂️ Java↔C++对照表 — 10项对照 | ✅ |
+| 15 | 🐛 问题排查SOP — 4个场景（设备丢失/RPA/Dual Mode/配置损坏） | ✅ |
+| 16 | 🛠️ 动手练习 — 4个练习含思考题 | ✅ |
+| 17 | 📚 关键源码索引 — Storage(20)+Crypto(5)+Common(6)+Metrics(1) | ✅ |
+| 18 | V1内容要点全部保留并增强 | ✅ |
+| 19 | 车载场景覆盖（配对管理/LinkKey恢复/Factory Reset/LTK↔LinkKey） | ✅ |
+| 20 | 源码行号与实际代码一致 | ✅ |

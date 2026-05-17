@@ -655,3 +655,20 @@ void btif_sock_thread_loop(void* arg) {
 | 10 | system/stack/rfcomm/rfc_l2cap_if.cc | L30-80 | L2CAP接口 | 数据收发 |
 | 11 | system/btif/include/bt_sock.h | L30-60 | btif_sock_connection_t | Socket控制块 |
 | 12 | system/stack/rfcomm/port_api.cc | L50-100 | PORT_Open() | 端口打开API |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 6个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 10个带逐行注释的代码片段 |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 3个 |
+| 4 | Java↔C++对照表 | ✅ 8项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 2个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 12项 |
+| 9 | 前置知识 | ✅ T17、T04 |
+| 10 | 车载场景 | ✅ SPP数据通道、车载诊断通信 |

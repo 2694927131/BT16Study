@@ -1,137 +1,238 @@
-# T34 SDP与L2CAP详解
+# T34 SDP与L2CAP详解 (V2)
 
-> 学习日期：2026-05-16
-> 使用工具：Trae+DS-v4-pro
-> 关键收获：
-> 1. SDP是蓝牙**服务发现**协议，通过7种PDU类型实现ServiceSearch→ServiceAttr→ServiceSearchAttr三层查询，数据元素采用(Tag|Size)+Value的TLV编码
-> 2. L2CAP是**链路适配层**协议，负责将上层数据拆分为小于MTU的分片，通过CID区分不同上层协议通道，提供Basic/ERTM/Streaming/LE CoC四种可靠性模式
-> 3. L2CAP控制块采用CCB(通道)→LCB(链路)→CB(全局)三层树形结构，RoundRobin调度确保多通道公平性
-> 4. LE Credit Based CoC(5.2)实现一对多通道+流控信用值机制，车载OTA/传感器场景重要
+> 学习日期：2026-05-17
+> 版本：V2 优化版
+> 前置知识：T01（蓝牙整体架构）、T05（Profile连接流程）
+> 优先级：P8
+> 车载场景：SDP查询失败导致Profile无法连接、L2CAP配置协商影响音频质量
 
 ---
 
-## 一、SDP (Service Discovery Protocol) 服务发现协议
+## 📋 本章导读
 
-### 1.1 协议栈位置与角色
+本章深入蓝牙协议栈中两个基础协议——**SDP（服务发现协议）** 和 **L2CAP（逻辑链路控制与适配协议）**。它们是所有蓝牙Profile连接的底层支撑：
 
-```
-Application层 (A2DP/HFP/PBAP/MAP/OPP...)
-        ↑ 通过SDP注册服务 | 通过SDP发现服务 ↓
-┌──────────────────────────────────────────┐
-│  SDP 层                                   │
-│  ┌──────────────────────────────────────┐│
-│  │ sdp_discovery.cc  ─ 远程服务发现     ││
-│  │ sdp_server.cc     ─ 本地服务请求响应 ││
-│  │ sdp_db.cc         ─ 本地服务数据库   ││
-│  │ sdp_utils.cc      ─ 数据元素编解码   ││
-│  └──────────────────────────────────────┘│
-├──────────────────────────────────────────┤
-│  L2CAP (通过CID 0x0001信令通道)          │
-└──────────────────────────────────────────┘
-```
+| 协议 | 一句话定位 | 车载核心场景 |
+|------|-----------|-------------|
+| **SDP** | "蓝牙黄页"——设备之间互相发现对方支持什么服务 | 车机发现手机A2DP/HFP/PBAP/MAP |
+| **L2CAP** | "蓝牙快递站"——多路复用、分片重组、可靠传输 | 多Profile并发传输、音频流QoS保障 |
 
-**核心源码文件**：
-| 文件 | 路径 |
-|------|------|
-| sdpint.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdpint.h) |
-| sdp_discovery_db.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery_db.h) |
-| sdpdefs.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdpdefs.h) |
-| sdp_api.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdp_api.h) |
-| sdp_status.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdp_status.h) |
-| sdp_discovery.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery.cc) |
-| sdp_server.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_server.cc) |
-| sdp_db.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_db.cc) |
+**关键收获**：
+1. SDP通过7种PDU类型实现ServiceSearch→ServiceAttr→ServiceSearchAttr三层查询，数据元素采用(Tag|Size)+Value的TLV编码
+2. L2CAP通过CID区分不同上层协议通道，提供Basic/ERTM/Streaming/LE CoC四种可靠性模式
+3. L2CAP控制块采用CCB(通道)→LCB(链路)→CB(全局)三层树形结构，RoundRobin调度确保多通道公平性
+4. LE Credit Based CoC(5.2)实现一对多通道+流控信用值机制，车载OTA/传感器场景重要
 
 ---
 
-### 1.2 PDU类型 — 服务发现的4种请求
+## 🗺️ 架构全景图
+
+### 1. SDP/L2CAP分层架构
+
+```mermaid
+graph TD
+    subgraph Application["Application层"]
+        A2DP["A2DP"]
+        HFP["HFP"]
+        PBAP["PBAP"]
+        MAP["MAP"]
+        AVRCP["AVRCP"]
+        HID["HID"]
+    end
+
+    subgraph SDP_Layer["SDP层"]
+        SDP_DISC["sdp_discovery.cc<br/>远程服务发现"]
+        SDP_SRV["sdp_server.cc<br/>本地服务响应"]
+        SDP_DB["sdp_db.cc<br/>本地服务数据库"]
+        SDP_UTIL["sdp_utils.cc<br/>数据元素编解码"]
+    end
+
+    subgraph L2CAP_Layer["L2CAP层"]
+        L2C_CSM["l2c_csm.cc<br/>通道状态机"]
+        L2C_FCR["l2c_fcr.cc<br/>FCR重传机制"]
+        L2C_LINK["l2c_link.cc<br/>链路管理"]
+        L2C_BLE["l2c_ble.cc<br/>BLE信令"]
+    end
+
+    subgraph HCI_Layer["HCI层"]
+        ACL["HCI ACL<br/>异步无连接链路"]
+    end
+
+    A2DP -->|"注册/发现服务"| SDP_Layer
+    HFP -->|"注册/发现服务"| SDP_Layer
+    PBAP -->|"注册/发现服务"| SDP_Layer
+    MAP -->|"注册/发现服务"| SDP_Layer
+
+    A2DP -->|"PSM=0x0019"| L2CAP_Layer
+    HFP -->|"RFCOMM"| L2CAP_Layer
+    AVRCP -->|"PSM=0x0017"| L2CAP_Layer
+    HID -->|"PSM=0x0011"| L2CAP_Layer
+
+    SDP_Layer -->|"CID=0x0001<br/>信令通道"| L2CAP_Layer
+    L2CAP_Layer -->|"ACL数据包"| ACL
+
+    style SDP_Layer fill:#e1f5fe,stroke:#0288d1
+    style L2CAP_Layer fill:#fff3e0,stroke:#ef6c00
+    style HCI_Layer fill:#e8f5e9,stroke:#388e3c
+```
+
+### 2. SDP查询时序
+
+```mermaid
+sequenceDiagram
+    participant App as Java App
+    participant BTIF as BTIF层
+    participant BTA as BTA层
+    participant SDP as SDP Stack
+    peer L2CAP as L2CAP
+    participant Remote as 远程设备
+
+    App->>BTIF: SdpManager.sdpSearch(addr, uuid)
+    BTIF->>BTA: BTA_SdpSearch(addr, uuid)
+    BTA->>SDP: SDP_ServiceSearchRequest()
+
+    Note over SDP: 建立L2CAP连接<br/>CID=0x0001
+
+    SDP->>L2CAP: L2CA_ConnectReq(PSM=SDP)
+    L2CAP->>Remote: CONN_REQ[PSM=SDP, SCID]
+    Remote-->>L2CAP: CONN_RSP[DCID, Result=OK]
+    L2CAP-->>SDP: 连接建立
+
+    rect rgb(230, 245, 255)
+        Note over SDP,Remote: ServiceSearchAttrReq (一步法)
+        SDP->>Remote: SDP_PDU_SERVICE_SEARCH_ATTR_REQ<br/>[UUID Seq + MaxAttrByteCount + AttrID Seq]
+        Remote-->>SDP: SDP_PDU_SERVICE_SEARCH_ATTR_RSP<br/>[AttrList + Continuation]
+    end
+
+    alt 需要分页续传
+        loop Continuation State非空
+            SDP->>Remote: SDP_PDU_SERVICE_SEARCH_ATTR_REQ<br/>[+ Continuation State]
+            Remote-->>SDP: SDP_PDU_SERVICE_SEARCH_ATTR_RSP
+        end
+    end
+
+    SDP-->>BTA: 回调 p_cb(discovery_db)
+    BTA-->>BTIF: JNI Callback
+    BTIF-->>App: Intent广播(SDP结果)
+```
+
+### 3. L2CAP通道状态图
+
+```mermaid
+stateDiagram-v2
+    [*] --> CST_CLOSED
+
+    CST_CLOSED --> CST_ORIG_W4_SEC_COMP: 发起连接<br/>L2CA_ConnectReq()
+    CST_CLOSED --> CST_TERM_W4_SEC_COMP: 收到CONN_REQ
+
+    CST_ORIG_W4_SEC_COMP --> CST_W4_L2CAP_CONNECT_RSP: 安全检查通过
+    CST_TERM_W4_SEC_COMP --> CST_W4_L2CA_CONNECT_RSP: 安全检查通过
+
+    CST_W4_L2CAP_CONNECT_RSP --> CST_CONFIG: 收到CONN_RSP<br/>Result=OK
+    CST_W4_L2CA_CONNECT_RSP --> CST_CONFIG: 上层确认连接
+
+    CST_CONFIG --> CST_OPEN: 双向配置完成<br/>IB_CFG_DONE & OB_CFG_DONE
+
+    CST_OPEN --> CST_W4_L2CAP_DISCONNECT_RSP: 发起断开<br/>DISC_REQ
+    CST_OPEN --> CST_W4_L2CA_DISCONNECT_RSP: 收到DISC_REQ
+
+    CST_W4_L2CAP_DISCONNECT_RSP --> CST_CLOSED: 收到DISC_RSP
+    CST_W4_L2CA_DISCONNECT_RSP --> CST_CLOSED: 上层确认断开
+
+    CST_ORIG_W4_SEC_COMP --> CST_CLOSED: 安全检查失败/超时
+    CST_W4_L2CAP_CONNECT_RSP --> CST_CLOSED: Result≠OK/超时
+    CST_CONFIG --> CST_CLOSED: 配置失败/超时
+```
+
+---
+
+## 🔍 代码导航表
+
+### SDP核心源码
+
+| 文件 | 核心职责 | 关键结构/函数 | 行号参考 |
+|------|---------|-------------|---------|
+| [sdpint.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdpint.h) | SDP内部定义 | PDU类型、tCONN_CB、tSDP_CB | L51-L57(PDU), L177-L212(tCONN_CB) |
+| [sdp_discovery_db.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery_db.h) | 发现数据库 | tSDP_DISCOVERY_DB、tSDP_DISC_REC、tSDP_DISC_ATTR | L49-L78 |
+| [sdpdefs.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdpdefs.h) | SDP常量 | Attribute ID、Data Element类型 | L35-L45(AttrID) |
+| [sdp_api.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdp_api.h) | SDP API | SDP_InitDiscoveryDB、SDP_ServiceSearchAttributeRequest | 全文 |
+| [sdp_discovery.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery.cc) | 远程服务发现 | sdpu_build_uuid_seq、构建SearchAttrReq | L59-L100(uuid_seq), L671(PDU) |
+| [sdp_server.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_server.cc) | 本地服务响应 | sdp_server_handle_client_req | 全文 |
+| [sdp_db.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_db.cc) | 本地数据库 | sdp_db_service_search、sdp_db_find_attr_in_rec | 全文 |
+| [sdp_utils.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_utils.cc) | 编解码工具 | sdpu_build_attrib_seq、sdpu_extract_attr_seq | 全文 |
+
+### L2CAP核心源码
+
+| 文件 | 核心职责 | 关键结构/函数 | 行号参考 |
+|------|---------|-------------|---------|
+| [l2c_int.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h) | L2CAP内部定义 | tL2C_CCB、tL2C_LCB、tL2C_CB、通道状态 | L73-L83(状态), L268-L366(CCB), L413-L585(LCB), L589-L648(CB) |
+| [l2cdefs.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h) | 协议常量 | 命令码、CID、配置选项、FCR常量 | L31-L53(命令), L306-L315(CID), L374-L379(配置) |
+| [l2cap_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cap_types.h) | 类型定义 | tL2CAP_FCR_OPTS、tL2CAP_ERTM_INFO | L80-L92(FCR) |
+| [l2c_csm.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_csm.cc) | 通道状态机 | l2c_csm_execute | 全文 |
+| [l2c_fcr.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_fcr.cc) | FCR重传 | ERTM发送/接收/重传逻辑 | 全文 |
+| [l2c_link.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_link.cc) | 链路管理 | l2cu_send_conn_req、l2c_link_timeout | 全文 |
+| [l2c_api.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_api.cc) | L2CAP API | L2CA_ConnectReq、L2CA_DataWrite | 全文 |
+| [l2c_ble.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_ble.cc) | BLE信令 | CoC连接/流控处理 | 全文 |
+
+---
+
+## 📖 核心流程详解
+
+### 流程1：SDP 7种PDU类型与发现策略
 
 SDP协议定义7种PDU ([sdpint.h:L51-L57](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdpint.h#L51-L57))：
 
-| PDU ID | 名称 | 方向 | 用途 |
-|--------|------|------|------|
-| `0x01` | SDP_ErrorResponse | S→C | 错误响应 |
-| `0x02` | **ServiceSearchReq** | C→S | 按UUID搜索服务记录句柄 |
-| `0x03` | ServiceSearchRsp | S→C | 返回匹配的Record Handle列表 |
-| `0x04` | **ServiceAttrReq** | C→S | 按Handle+AttrID获取属性值 |
-| `0x05` | ServiceAttrRsp | S→C | 返回属性值列表 |
-| `0x06` | **ServiceSearchAttrReq** | C→S | 搜索+属性查询合并（最常用） |
-| `0x07` | ServiceSearchAttrRsp | S→C | 返回Handle+Attr对 |
-
-**发现流程对比**：
-
-```
-方式A：两步法（传统）
-  ① ServiceSearchReq → 获取Handle列表
-  ② ServiceAttrReq   → 按Handle获取属性
-
-方式B：一步法（推荐）
-  ① ServiceSearchAttrReq → 一步获取Handle+所有属性
-     (UUID搜索 + 属性过滤 + 内容直接返回)
-```
-
-**ServiceSearchAttrReq 协议格式**：
-
 ```cpp
-// [sdp_discovery.cc] - 构建ServiceSearchAttrReq
-static void sdp_snd_service_search_attr_req(tCONN_CB* p_ccb, uint8_t cont_len, uint8_t* p_cont) {
-  BT_HDR* p_cmd = (BT_HDR*)osi_malloc(SDP_DATA_BUF_SIZE);
-  p_cmd->offset = L2CAP_MIN_OFFSET;
-  uint8_t* p = p_cmd->data + L2CAP_MIN_OFFSET;
-  uint8_t* p_start = p;
+// [sdpint.h:L51-L57] PDU类型定义
+#define SDP_PDU_ERROR_RESPONSE           0x01  // S→C 错误响应
+#define SDP_PDU_SERVICE_SEARCH_REQ       0x02  // C→S 按UUID搜索服务记录句柄
+#define SDP_PDU_SERVICE_SEARCH_RSP       0x03  // S→C 返回匹配的Record Handle列表
+#define SDP_PDU_SERVICE_ATTR_REQ         0x04  // C→S 按Handle+AttrID获取属性值
+#define SDP_PDU_SERVICE_ATTR_RSP         0x05  // S→C 返回属性值列表
+#define SDP_PDU_SERVICE_SEARCH_ATTR_REQ  0x06  // C→S 搜索+属性查询合并（最常用）
+#define SDP_PDU_SERVICE_SEARCH_ATTR_RSP  0x07  // S→C 返回Handle+Attr对
+```
 
-  // PDU ID
-  UINT8_TO_BE_STREAM(p, SDP_PDU_SERVICE_SEARCH_ATTR_REQ);
-  // Transaction ID
-  UINT16_TO_BE_STREAM(p, p_ccb->transaction_id);
-  // Parameter Length (占位，稍后回填)
-  UINT16_TO_BE_STREAM(p, 0);
-  // UUID Sequence (DATA_ELE_SEQ of UUIDs)
-  p = sdpu_build_uuid_seq(p, p_ccb->p_db->num_uuid_filters, p_ccb->p_db->uuid_filters, ...);
-  // Max Attribute Byte Count
-  UINT16_TO_BE_STREAM(p, 0xFFFF);
-  // Attribute ID Sequence (DATA_ELE_SEQ)
-  p = sdpu_build_attrib_seq(p, p_ccb->p_db->p_attr_list, p_ccb->p_db->num_attr_filters, ...);
-  // Continuation (分页)
-  *p++ = cont_len;
-  ...
-}
+**发现策略对比**：
+
+```
+方式A：两步法（传统，少用）
+  ① ServiceSearchReq(UUID) → 获取Handle列表
+  ② ServiceAttrReq(Handle, AttrIDs) → 按Handle获取属性
+
+方式B：一步法（推荐，Android默认）
+  ① ServiceSearchAttrReq(UUID + AttrIDs) → 一步获取Handle+所有属性
+     优势：减少一次RTT，降低延迟
 ```
 
 ---
 
-### 1.3 数据元素编码 (Data Element) — TLV格式
+### 流程2：SDP数据元素TLV编码
 
-SDP每条属性都采用**DES (Data Element Sequence)** 编码 ([sdpdefs.h:L130-L140](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdpdefs.h#L130-L140))：
+SDP每条属性采用**DES (Data Element Sequence)** 编码，格式为 `(Type高5位 | Size低3位) [Size字节] [数据]`。
 
-**编码格式**: `(Type高5位 | Size低3位) [Size字节] [数据]`
+```cpp
+// [sdpdefs.h] 数据元素类型描述符 (Type, 高5位)
+#define NIL_DESC_TYPE            0   // 空值
+#define UINT_DESC_TYPE           1   // 无符号整数
+#define TWO_COMP_INT_DESC_TYPE   2   // 有符号整数（二进制补码）
+#define UUID_DESC_TYPE           3   // UUID
+#define TEXT_STR_DESC_TYPE       4   // 文本字符串
+#define BOOLEAN_DESC_TYPE        5   // 布尔值
+#define DATA_ELE_SEQ_DESC_TYPE   6   // 数据元素序列（嵌套）
+#define DATA_ELE_ALT_DESC_TYPE   7   // 数据元素替代（二选一）
+#define URL_DESC_TYPE            8   // URL字符串
 
-**描描述符类型** (Type, 高5位)：
-
-| Type值 | 常量 | 含义 |
-|--------|------|------|
-| 0 | NIL_DESC_TYPE | 空值 |
-| 1 | UINT_DESC_TYPE | 无符号整数 |
-| 2 | TWO_COMP_INT_DESC_TYPE | 有符号整数（二进制补码） |
-| 3 | UUID_DESC_TYPE | UUID |
-| 4 | TEXT_STR_DESC_TYPE | 文本字符串 |
-| 5 | BOOLEAN_DESC_TYPE | 布尔值 |
-| 6 | DATA_ELE_SEQ_DESC_TYPE | 数据元素序列（嵌套） |
-| 7 | DATA_ELE_ALT_DESC_TYPE | 数据元素替代（二选一） |
-| 8 | URL_DESC_TYPE | URL字符串 |
-
-**尺寸指示** (Size, 低3位)：
-
-| Size值 | 常量 | 数据长度范围 |
-|--------|------|------------|
-| 0 | SIZE_ONE_BYTE | 1字节(仅对NIL) |
-| 1 | SIZE_TWO_BYTES | 2字节(UUID16) |
-| 2 | SIZE_FOUR_BYTES | 4字节(UUID32) |
-| 3 | SIZE_EIGHT_BYTES | 8字节 |
-| 4 | SIZE_SIXTEEN_BYTES | 16字节(UUID128) |
-| 5 | SIZE_IN_NEXT_BYTE | 下1字节=长度 |
-| 6 | SIZE_IN_NEXT_WORD | 下2字节=长度 |
-| 7 | SIZE_IN_NEXT_LONG | 下4字节=长度 |
+// 尺寸指示 (Size, 低3位)
+#define SIZE_ONE_BYTE            0   // 1字节(仅对NIL)
+#define SIZE_TWO_BYTES           1   // 2字节(UUID16)
+#define SIZE_FOUR_BYTES          2   // 4字节(UUID32)
+#define SIZE_EIGHT_BYTES         3   // 8字节
+#define SIZE_SIXTEEN_BYTES       4   // 16字节(UUID128)
+#define SIZE_IN_NEXT_BYTE        5   // 下1字节=长度
+#define SIZE_IN_NEXT_WORD        6   // 下2字节=长度
+#define SIZE_IN_NEXT_LONG        7   // 下4字节=长度
+```
 
 **编码示例**：
 
@@ -149,127 +250,315 @@ UUID16 0x110B (A2DP Sink UUID):
 
 ---
 
-### 1.4 属性体系 — 标准Attribute ID
+### 流程3：构建ServiceSearchAttrReq（逐行注释）
 
-每个服务记录包含一组属性，标准属性ID定义在 [sdpdefs.h:L35-L45](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdpdefs.h#L35-L45)：
-
-| Attribute ID | 常量 | 含义 | 示例值 |
-|-------------|------|------|--------|
-| `0x0000` | SERVICE_RECORD_HDL | 服务记录句柄 | `0x00010001` |
-| `0x0001` | **SERVICE_CLASS_ID_LIST** | 服务类UUID列表 | `{0x110B(A2DP_Sink), 0x110D(AVRCP_Target)}` |
-| `0x0002` | SERVICE_RECORD_STATE | 记录状态 | `0x00000001` |
-| `0x0003` | SERVICE_ID | 服务实例ID | `0x00010001` |
-| `0x0004` | **PROTOCOL_DESC_LIST** | 协议栈描述（核心！） | `{L2CAP{PSM}, RFCOMM{CH}, OBEX{...}}` |
-| `0x0005` | BROWSE_GROUP_LIST | 浏览组列表 | `{0x1002(PublicBrowseRoot)}` |
-| `0x0006` | LANGUAGE_BASE_ATTR_ID_LIST | 语言基础属性 | `{0x656E, 0x006A, 0x0100(en+UTF-8)}` |
-| `0x0009` | **BT_PROFILE_DESC_LIST** | Profile描述列表 | `{0x110B, 0x0103(A2DP v1.3)}` |
-| `0x0100`+ | 自定义属性 | 服务名/描述/Provider名 | `"Car Bluetooth"` |
-
-**PROTOCOL_DESC_LIST 结构** — 每条服务记录最重要的属性：
-
-```
-Attribute ID = 0x0004 (PROTOCOL_DESC_LIST)
-Value = DATA_ELE_SEQ of:
-  DATA_ELE_SEQ {                  ← 第1层协议
-    UUID: 0x0100 (L2CAP)          ← 协议UUID
-    UINT16: 0x0019 (PSM=25)      ← 协议参数 (AVDTP PSM)
-  }
-  DATA_ELE_SEQ {                  ← 第2层协议
-    UUID: 0x0019 (AVDTP)          ← 协议UUID
-    UINT16: 0x0103 (Version 1.3)  ← 协议参数
-  }
-```
-
-**车载各Profile的SDP注册示例**：
-
-| Profile | 第一层UUID | 参数 | 第二层UUID | 参数 |
-|---------|-----------|------|-----------|------|
-| A2DP Sink | L2CAP(0x0100) | PSM=0x0019 | AVDTP(0x0019) | version |
-| A2DP Source | L2CAP(0x0100) | PSM=0x0019 | AVDTP(0x0019) | version |
-| HFP-AG | L2CAP(0x0100) | PSM=none | RFCOMM(0x0003) | Channel=N |
-| HFP-HF | L2CAP(0x0100) | PSM=none | RFCOMM(0x0003) | Channel=N |
-| PBAP PSE | L2CAP(0x0100) | PSM=none | RFCOMM(0x0003) | Channel=N → OBEX |
-| MAP MAS | L2CAP(0x0100) | PSM=none | RFCOMM(0x0003) | Channel=N → OBEX |
-
----
-
-### 1.5 发现数据库 — tSDP_DISCOVERY_DB
-
-[SDP发现数据库](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery_db.h#L66-L78) 是客户端存储SDP搜索结果的缓冲区：
+这是SDP客户端最核心的函数，构建一步法查询请求包 ([sdp_discovery.cc:L652-L720](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery.cc#L652-L720))：
 
 ```cpp
-typedef struct {
-  uint16_t mem_size;      // 总缓冲区大小
-  uint16_t mem_free;      // 剩余可用空间
-  uint8_t* p_first_rec;   // 第一条服务记录
-  uint8_t* p_free_mem;    // 空闲区指针
-  uint32_t timestamp;     // 记录创建时间戳
-  Uuid* uuid_filters;    // UUID过滤条件（sizeof(Uuid)=16）
-  uint16_t num_uuid_filters;
-  uint16_t num_attr_filters;   // 属性过滤条件
-  uint16_t attr_filters[];     // 属性ID数组
-} tSDP_DISCOVERY_DB;
-```
+// [sdp_discovery.cc] 构建ServiceSearchAttrReq PDU
+// 场景：车机发现手机A2DP服务，一步获取所有属性
 
-**子结构 — tSDP_DISC_REC** (单个服务记录)：
-```cpp
-typedef struct {
-  tSDP_DISC_ATTR* p_first_attr;    // 属性链表头
-  tSDP_DISC_ATTR* p_next_attr;     // 迭代器指针
-  bool free_pad_ptr;                // 填充信息
-  uint8_t* p_sub_attr;             // 子属性设置
-} tSDP_DISC_REC;
-```
+BT_HDR* p_msg = (BT_HDR*)osi_malloc(SDP_DATA_BUF_SIZE);  // 💡C++: C风格强制转换+动态内存分配, Java用new自动管理
+uint16_t bytes_left = SDP_DATA_BUF_SIZE;                   // ② 剩余可用字节数
 
-**子结构 — tSDP_DISC_ATTR** (单个属性)：
-```cpp
-typedef struct {
-  tSDP_DISC_ATTR* p_next_attr;    // 链表下一个
-  uint16_t attr_id;                // Attribute ID
-  uint16_t attr_len_type;          // 属性长度(高12位)|类型(低4位)
-  uint32_t attr_value;             // 属性值指针值
-} tSDP_DISC_ATTR;
-```
+if (p_ccb->p_db == NULL) {                                 // ③ 检查发现数据库有效性
+  sdp_disconnect(p_ccb, tSDP_STATUS::SDP_INVALID_CONT_STATE);
+  osi_free(p_msg);
+  return;
+}
 
-**查询示例** — 从Discovery DB中提取属性：
-```cpp
-// sdp_utils.cc - 根据Attribute ID查找值
-bool SDP_FindAttributeInRec(const tSDP_DISC_REC* p_rec, uint16_t attr_id) {
-  for (tSDP_DISC_ATTR* p_attr = p_rec->p_first_attr; p_attr; p_attr = p_attr->p_next_attr) {
-    if (p_attr->attr_id == attr_id) {
-      // 找到属性
-      return true;
-    }
-  }
-  return false;
+p_msg->offset = L2CAP_MIN_OFFSET;                          // ④ 预留L2CAP头偏移
+p = p_start = (uint8_t*)(p_msg + 1) + L2CAP_MIN_OFFSET;   // 💡C++: 指针算术, p_msg+1跳过sizeof(BT_HDR)字节
+
+UINT8_TO_BE_STREAM(p, SDP_PDU_SERVICE_SEARCH_ATTR_REQ);    // ⑥ PDU ID = 0x06
+UINT16_TO_BE_STREAM(p, p_ccb->transaction_id);             // ⑦ 事务ID（每次递增）
+p_ccb->transaction_id++;                                   // ⑧ 递增事务ID
+
+p_param_len = p;                                           // ⑨ 保存参数长度位置
+p += 2;                                                    // ⑩ 跳过2字节参数长度（稍后回填）
+
+// 计算基础开销并扣减
+const uint16_t base_bytes =
+    (sizeof(BT_HDR) + L2CAP_MIN_OFFSET + 3u +              // ⑪ PDU头开销
+     2u +                                                    // ⑫ 参数长度字段
+     3u +                                                    // ⑬ MaxServiceRecordCount
+     ((p_reply) ? (*p_reply) : 0));                          // ⑭ Continuation长度
+bytes_left -= base_bytes;                                   // ⑮ 扣减基础开销
+
+p = sdpu_build_uuid_seq(p,                                 // ⑯ 构建UUID序列
+    p_ccb->p_db->num_uuid_filters,                          //    UUID过滤数量
+    p_ccb->p_db->uuid_filters,                              //    UUID过滤列表
+    bytes_left);                                            //    可用空间
+
+UINT16_TO_BE_STREAM(p, sdp_cb.max_attr_list_size);          // ⑰ MaxAttributeByteCount
+
+if (p_ccb->p_db->num_attr_filters) {                       // ⑱ 有属性过滤器？
+  p = sdpu_build_attrib_seq(p,                             // ⑲ 构建属性ID序列
+      p_ccb->p_db->attr_filters,
+      p_ccb->p_db->num_attr_filters);
+} else {
+  p = sdpu_build_attrib_seq(p, NULL, 0);                   // ⑳ 无过滤器=通配所有属性
+}
+
+if (p_reply) {                                              // ㉑ 有续传状态？
+  memcpy(p, p_reply, *p_reply + 1);                        // 💡C++: memcpy内存拷贝, Java用System.arraycopy()
+  p += *p_reply + 1;
+} else {
+  UINT8_TO_BE_STREAM(p, 0);                                // ㉓ 首次请求：Continuation=0
 }
 ```
 
 ---
 
-### 1.6 连接控制块 — tCONN_CB
-
-[SDP连接控制块](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdpint.h#L177-L212) 管理一次SDP会话：
+### 流程4：UUID序列构建（逐行注释）
 
 ```cpp
-typedef struct {
-  uint8_t* p_start;                   // 缓冲区起始指针
-  uint16_t transaction_id;            // 事务ID（每次搜索递增）
-  RawAddress device_address;          // 远程设备地址
-  tSDP_DISCOVERY_DB* p_db;           // 发现数据库指针
-  tSDP_DISC_CMPL_CB* p_cb;           // 搜索完成回调
-  tSDP_DISC_CMPL_CB2* p_cb2;         // 搜索完成回调（新接口）
-  uint32_t ticks;                     // 连接创建时间戳
-  uint16_t rem_mtu_size;              // 远程MTU大小
-  uint16_t request_cont_offset;       // 连续请求偏移
-  tSDP_STATE_TBL state;               // 连接状态
-  uint8_t sdp_disc_connected;         // 连接标志
-} tCONN_CB;
+// [sdp_discovery.cc:L59-L100] sdpu_build_uuid_seq
+// 场景：将Java层传入的UUID列表编码为SDP数据元素序列
+
+static uint8_t* sdpu_build_uuid_seq(uint8_t* p_out, uint16_t num_uuids,
+                                     Uuid* p_uuid_list, uint16_t& bytes_left) {
+  uint8_t* p_len;
+
+  if (bytes_left < 2) {                                    // ① 检查最小空间
+    DCHECK(0) << "SDP: No space for data element header";
+    return p_out;
+  }
+
+  UINT8_TO_BE_STREAM(p_out,                                // ② 写入DES头:
+      (DATA_ELE_SEQ_DESC_TYPE << 3) | SIZE_IN_NEXT_BYTE);  //    Type=SEQ(6), Size=5(下1字节)
+  p_len = p_out;                                           // ③ 记住长度字段位置
+  p_out += 1;                                              // ④ 跳过1字节长度
+  bytes_left -= 2;                                         // ⑤ 扣减DES头+长度
+
+  for (xx = 0; xx < num_uuids; xx++, p_uuid_list++) {      // ⑥ 遍历每个UUID
+    int len = p_uuid_list->GetShortestRepresentationSize(); // ⑦ 取最短表示(16/32/128)
+
+    if (len + 1 > bytes_left) {                            // ⑧ 空间不足检查
+      DCHECK(0) << "SDP: Too many UUIDs for internal buffer";
+      break;
+    }
+    bytes_left -= (len + 1);                               // ⑨ 扣减UUID占用空间
+
+    if (len == Uuid::kNumBytes16) {                        // ⑩ UUID16 (2字节)
+      UINT8_TO_BE_STREAM(p_out, (UUID_DESC_TYPE << 3) | SIZE_TWO_BYTES);
+      UINT16_TO_BE_STREAM(p_out, p_uuid_list->As16Bit()); //    如0x110B
+    } else if (len == Uuid::kNumBytes32) {                 // ⑪ UUID32 (4字节)
+      UINT8_TO_BE_STREAM(p_out, (UUID_DESC_TYPE << 3) | SIZE_FOUR_BYTES);
+      UINT32_TO_BE_STREAM(p_out, p_uuid_list->As32Bit());
+    } else if (len == Uuid::kNumBytes128) {                // ⑫ UUID128 (16字节)
+      UINT8_TO_BE_STREAM(p_out, (UUID_DESC_TYPE << 3) | SIZE_SIXTEEN_BYTES);
+      ARRAY_TO_BE_STREAM(p_out, p_uuid_list->To128BitBE(), (int)Uuid::kNumBytes128);
+    }
+  }
+
+  *p_len = (uint8_t)(p_out - p_len - 1);                  // ⑬ 回填序列长度
+  return p_out;
+}
 ```
 
 ---
 
-### 1.7 完整调用链 — App→Native
+### 流程5：SDP发现数据库查询（逐行注释）
+
+[tSDP_DISCOVERY_DB](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery_db.h#L66-L78) 是客户端存储SDP搜索结果的缓冲区：
+
+```cpp
+// [sdp_discovery_db.h:L49-L78] 发现数据库核心结构
+
+struct tSDP_DISC_ATTR {                                    // 单个属性节点
+  struct tSDP_DISC_ATTR* p_next_attr;                      // 💡C++: 结构体自引用指针实现链表, Java用LinkedList<Node>
+  uint16_t attr_id;                                        // ② Attribute ID (如0x0004)
+  uint16_t attr_len_type;                                  // ③ 长度(高12位)|类型(低4位)
+  tSDP_DISC_ATVAL attr_value;                              // ④ 属性值(联合体)
+};
+
+struct tSDP_DISC_REC {                                     // 单个服务记录
+  tSDP_DISC_ATTR* p_first_attr;                            // ⑤ 该记录的第一个属性
+  struct tSDP_DISC_REC* p_next_rec;                        // ⑥ 链表：下一条记录
+  uint32_t time_read;                                      // ⑦ 记录读取时间戳
+  RawAddress remote_bd_addr;                               // ⑧ 远程设备地址
+};
+
+struct tSDP_DISCOVERY_DB {                                 // 发现数据库(顶层)
+  uint32_t mem_size;                                       // ⑨ 总缓冲区大小
+  uint32_t mem_free;                                       // ⑩ 剩余可用空间
+  tSDP_DISC_REC* p_first_rec;                              // ⑪ 第一条服务记录
+  uint16_t num_uuid_filters;                               // ⑫ UUID过滤条件数
+  bluetooth::Uuid uuid_filters[SDP_MAX_UUID_FILTERS];      // ⑬ UUID过滤列表
+  uint16_t num_attr_filters;                               // ⑭ 属性过滤条件数
+  uint16_t attr_filters[SDP_MAX_ATTR_FILTERS];             // ⑮ 属性ID过滤列表
+  uint8_t* p_free_mem;                                     // ⑯ 空闲区指针
+  uint8_t* raw_data;                                       // ⑰ 原始服务端响应数据
+  uint32_t raw_size;                                       // ⑱ raw_data总大小
+  uint32_t raw_used;                                       // ⑲ raw_data已用长度
+};
+```
+
+**查询示例** — 从Discovery DB中提取属性：
+
+```cpp
+// [sdp_utils.cc] 根据Attribute ID在记录中查找属性
+const tSDP_ATTRIBUTE* sdp_db_find_attr_in_rec(
+    const tSDP_RECORD* p_rec,                              // ① 服务记录
+    uint16_t start_attr,                                   // ② 起始AttrID
+    uint16_t end_attr) {                                   // ③ 结束AttrID
+  for (int ii = 0; ii < p_rec->num_attributes; ii++) {     // ④ 遍历所有属性
+    if ((p_rec->attribute[ii].id >= start_attr) &&          // ⑤ ID在范围内？
+        (p_rec->attribute[ii].id <= end_attr)) {
+      return &p_rec->attribute[ii];                        // ⑥ 返回匹配属性
+    }
+  }
+  return NULL;                                             // 💡C++: C风格NULL, C++推荐用nullptr; Java用null
+}
+```
+
+---
+
+### 流程6：L2CAP通道建立流程（逐行注释）
+
+L2CAP通道建立经历 **CONN_REQ → CONN_RSP → CONFIG_REQ/RSP → OPEN** 四个阶段：
+
+```cpp
+// [l2c_link.cc] 发起L2CAP连接请求
+void l2cu_send_conn_req(tL2C_CCB* p_ccb) {
+  // ① 构建CONN_REQ包: PSM(2) + SCID(2) = 4字节
+  BT_HDR* p_buf = (BT_HDR*)osi_malloc(L2CAP_CMD_BUF_SIZE);
+  p_buf->offset = HCI_DATA_PREAMBLE_SIZE;
+
+  uint8_t* p = (uint8_t*)(p_buf + 1) + L2CAP_CMD_OVERHEAD + HCI_DATA_PREAMBLE_SIZE;
+
+  UINT16_TO_BE_STREAM(p, L2CAP_CMD_CONN_REQ);              // ② 命令码=0x02
+  UINT8_TO_BE_STREAM(p, p_ccb->remote_id);                 // ③ 对端事务ID
+  UINT16_TO_BE_STREAM(p, L2CAP_CONN_REQ_LEN);              // ④ 数据长度=4
+  UINT16_TO_BE_STREAM(p, p_ccb->p_rcb->psm);               // ⑤ PSM (如0x0019=AVDTP)
+  UINT16_TO_BE_STREAM(p, p_ccb->local_cid);                // ⑥ Source CID (本地CID)
+
+  l2c_link_check_send_pkts(p_ccb->p_lcb, NULL, p_buf);     // ⑦ 通过LCB发送
+}
+
+// [l2c_csm.cc] 收到CONN_RSP后的处理
+case CST_W4_L2CAP_CONNECT_RSP:
+  // ⑧ 检查Result字段
+  if (con_result == L2CAP_CONN_OK) {                       // ⑨ 连接成功
+    p_ccb->chnl_state = CST_CONFIG;                        // ⑩ 进入CONFIG状态
+    p_ccb->remote_cid = dcid;                              // ⑪ 保存对端CID
+    l2cu_send_chnl_config_req(p_ccb);                      // ⑫ 发送CONFIG_REQ
+  } else if (con_result == L2CAP_CONN_PENDING) {           // ⑬ 连接挂起
+    // 启动定时器等待
+  } else {                                                  // ⑭ 连接失败
+    l2cu_release_ccb(p_ccb);                               // ⑮ 释放CCB
+  }
+```
+
+---
+
+### 流程7：L2CAP FCR配置协商（逐行注释）
+
+```cpp
+// [l2cap_types.h:L80-L102] FCR选项结构与默认值
+
+typedef struct {
+  uint8_t mode;            // ① FCR模式: 0x00=Basic, 0x03=ERTM, 0x05=LE_CoC
+  uint8_t tx_win_sz;       // ② 发送窗口大小 (1-63)
+  uint8_t max_transmit;    // ③ 最大重传次数
+  uint16_t rtrans_tout;    // ④ 重传超时 (ms)
+  uint16_t mon_tout;       // ⑤ 监视超时 (ms)
+  uint16_t mps;            // ⑥ 最大PDU负载大小
+} tL2CAP_FCR_OPTS;
+
+// ERTM默认配置
+constexpr tL2CAP_FCR_OPTS kDefaultErtmOptions = {  // 💡C++: constexpr编译期常量+聚合初始化, Java用static final
+  L2CAP_FCR_ERTM_MODE,  // mode = 0x03
+  10,                    // tx_win_sz = 10 (同时发10个PDU不等ACK)
+  20,                    // max_transmit = 20 (最多重传20次)
+  2000,                  // rtrans_tout = 2秒
+  12000,                 // mon_tout = 12秒
+  1010                   // mps = 1010字节
+};
+```
+
+**三种可靠性模式对比**：
+
+| 模式 | mode值 | 重传 | 顺序保证 | 适用场景 |
+|------|--------|------|---------|---------|
+| **Basic Mode** | 0x00 | ❌ 无 | ❌ 无 | A2DP音频流/SDP（丢包无所谓） |
+| **ERTM** (Enhanced Retransmission) | 0x03 | ✅ 自动重传 | ✅ 保证 | AVRCP控制命令/蓝牙HID/ATT(GATT) |
+| **Streaming Mode** | 0x04 | ❌ 无 | ❌ 无但有FCS检测 | 单向音频/视频流 |
+| **LE CoC** | 0x05 | ❌ 无 | ❌ 无但支持流控(Credit) | BLE大文件传输/OTA |
+
+---
+
+## 💡 C++知识卡片
+
+### 卡片1：柔性数组成员 (Flexible Array Member)
+
+```cpp
+// [sdp_discovery_db.h:L36-L47] tSDP_DISC_ATVAL中的柔性数组
+
+struct tSDP_DISC_ATVAL {
+  union {
+    uint8_t u8;
+    uint16_t u16;
+    uint32_t u32;
+    struct tSDP_DISC_ATTR* p_sub_attr;
+    uint8_t array[];                    // ← 柔性数组成员
+  } v;
+};
+```
+
+**知识点**：
+- `uint8_t array[]` 是C99引入的**柔性数组成员**（Flexible Array Member）
+- 它不占用结构体大小（`sizeof(tSDP_DISC_ATVAL)` 不包含array的空间）
+- 实际内存由外部"后备存储"分配，结构体末尾紧跟着array的数据
+- 在SDP中，`tSDP_DISC_ATTR`被连续分配在一块大缓冲区(tSDP_DISCOVERY_DB)中，`array[]`指向紧随其后的属性值数据
+- **对比**：C++中也可用`std::vector`或`std::span`，但蓝牙协议栈为零拷贝性能采用柔性数组
+
+### 卡片2：enum class与类型安全
+
+```cpp
+// [l2cdefs.h:L155-L176] L2CAP连接结果使用enum class
+
+enum class tL2CAP_CONN : uint16_t {       // ← enum class + 底层类型
+  L2CAP_CONN_OK = 0x0000,
+  L2CAP_CONN_PENDING = 0x0001,
+  L2CAP_CONN_NO_PSM = 0x0002,
+  L2CAP_CONN_TIMEOUT = 0xEEEE,
+  ...
+};
+
+// [l2c_int.h:L73-L83] 通道状态使用传统enum
+
+typedef enum {                             // ← 传统enum（无类型安全）
+  CST_CLOSED,
+  CST_ORIG_W4_SEC_COMP,
+  CST_CONFIG,
+  CST_OPEN,
+  ...
+} tL2C_CHNL_STATE;
+```
+
+**知识点**：
+- `enum class`（C++11）不会隐式转换为`int`，必须用`static_cast<uint16_t>(result)`
+- 传统`enum`的值会泄漏到外层作用域，且可隐式转`int`，容易误用
+- Android蓝牙栈正在逐步迁移到`enum class`（新代码用enum class，旧代码保持兼容）
+- `enum class tL2CAP_CONN : uint16_t` 指定底层类型为uint16_t，确保ABI兼容
+
+---
+
+## 🗂️ Java↔C++对照表
+
+| Java层 | JNI层 | C++ Stack层 | 数据流向 |
+|--------|-------|------------|---------|
+| `SdpManager.sdpSearch(addr, uuid)` | `com_android_bluetooth_sdp.cpp` → `sdp_interface->sdp_search()` | `SDP_ServiceSearchAttributeRequest()` | Java→Native |
+| `SdpManager.sdpCreateRecord()` | `sdp_interface->create_sdp_record()` | `SDP_CreateRecord()` | Java→Native |
+| `SdpManagerNativeInterface.sdpSearchNative()` | JNI回调 | `btif_sdp_search()` → `BTA_SdpSearch()` | Java→Native |
+| Intent: `BluetoothDevice.ACTION_UUID` | `com_android_bluetooth_sdp.cpp` 回调 | `sdp_disc_server_rsp()` → BTA → BTIF | Native→Java |
+| `BluetoothSocket.connect()` | `btif_sock_l2cap.cc` | `L2CA_ConnectReq()` | Java→Native |
+| `BluetoothGatt.connect()` | `btif_gatt_client.cc` | `L2CA_ConnectFixedChnl(ATT_CID)` | Java→Native |
+| `BluetoothProfile.getConnectionState()` | Profile JNI | L2CAP CCB `chnl_state` 查询 | Native→Java |
+
+**完整SDP调用链**：
 
 ```
 Java层 SdpManager.java
@@ -286,522 +575,80 @@ BTA层 bta_sdp/
   └→ bta_sdp_search → SDP_ServiceSearchRequest()
 
 Stack层 sdp_discovery.cc
-  └→ sdp_snd_service_search_attr_req()
+  └→ 构建 ServiceSearchAttrReq PDU
        └→ L2CA_DataWrite(CID=L2CAP_SIGNALLING_CID)
-          (SDP通过L2CAP信令通道传输)
 
-// 响应回调 — 反向链路：
+响应回调 — 反向链路：
 Stack层 sdp_server.cc → sdp_process_service_search_attr_req()
-  └→ BTA → BTIF → JNI Callback → Java Intent广播
+  └→ BTA → BTIF → JNI Callback → Java Intent广播(ACTION_UUID)
 ```
 
 ---
 
-### 1.8 车载SDP关键场景
+## 🐛 问题排查SOP
 
-| 场景 | SDP操作 | 关键UUID | 常见问题 |
-|------|---------|---------|---------|
-| **车机发现手机A2DP** | ServiceSearchAttrReq→UUID 0x110B | A2DP_Sink=0x110B, A2DP_Source=0x110A | SDP Record PSM不是标准值25 |
-| **车机发现手机HFP** | ServiceSearchAttrReq→UUID 0x111E/0x111F | AG=0x111F, HF=0x111E | RFCOMM Channel不是标准值 |
-| **车机发现手机PBAP** | ServiceSearchAttrReq→UUID 0x1130 | PSE=0x1130 | SDP中missing PBAP v1.2特性位 |
-| **车机发现手机MAP** | ServiceSearchAttrReq→UUID 0x1132 | MAS=0x1132 | SDP中missing MAP version→没有SMS能力 |
-| **手机发现车机服务** | ServiceSearchAttrReq→车机所有服务 | 全部Profile UUID | 车机SDP未能正确列出所有服务 |
-
----
-
-## 二、L2CAP (Logical Link Control and Adaptation Protocol)
-
-### 2.1 协议栈位置与角色
+### SOP1：SDP查询失败导致Profile无法连接
 
 ```
-┌─────────────────────────────────────────┐
-│  RFCOMM / AVDTP / AVRCP / ATT / SMP     │  上层协议
-├─────────────────────────────────────────┤
-│  L2CAP (Logical Link Control &         │
-│         Adaptation Protocol)            │
-│  ┌─────────────────────────────────────┐│
-│  │ 通道多路复用 (CID)                   ││
-│  │ 分片与重组 (SAR)                     ││
-│  │ 协议复用 (PSM区分上层协议)           ││
-│  │ QoS / 流控 / ERTM重传               ││
-│  └─────────────────────────────────────┘│
-├─────────────────────────────────────────┤
-│  HCI ACL (Asynchronous Connection-Less) │  下层链路
-└─────────────────────────────────────────┘
+症状：车机无法发现手机A2DP/HFP/PBAP等服务
+                    ┌─────────────────────┐
+                    │  SDP查询返回空结果    │
+                    └──────────┬──────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+     ┌────────────┐   ┌────────────┐   ┌────────────┐
+     │ L2CAP连接   │   │ SDP Record │   │ UUID不匹配 │
+     │ 建立失败    │   │ 未注册     │   │            │
+     └─────┬──────┘   └─────┬──────┘   └─────┬──────┘
+           │                │                │
+           ▼                ▼                ▼
+  检查HCI Log:        sdptool browse       确认UUID:
+  CONN_RSP Result     本地SDP Record       0x110B(A2DP Sink)
+  ≠0x0000?            是否存在?             0x111E(HFP HF)
+                                           0x1130(PBAP PSE)
+           │                │                │
+           ▼                ▼                ▼
+  Result=0x0002      Record缺失→           检查interop_
+  (NO_PSM):          检查Profile           database.conf
+  PSM未注册           是否已启动            互操作标记
 ```
 
-**核心源码文件**：
-| 文件 | 路径 |
-|------|------|
-| l2c_int.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h) |
-| l2cdefs.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h) |
-| l2c_csm.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_csm.cc) |
-| l2c_fcr.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_fcr.cc) |
-| l2cap_interface.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cap_interface.h) |
-| l2c_link.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_link.cc) |
-| l2c_utils.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_utils.cc) |
+**排查步骤**：
 
----
+| 步骤 | 操作 | 命令/方法 |
+|------|------|----------|
+| 1 | 确认ACL连接已建立 | HCI Log: `HCI Read Remote Version` |
+| 2 | 确认L2CAP信令通道可用 | HCI Log: CID=0x0001上的Info Req/Rsp |
+| 3 | 检查SDP PDU交互 | HCI Log: `SDP_PDU_SERVICE_SEARCH_ATTR_REQ/RSP` |
+| 4 | 检查SDP Record完整性 | `sdptool browse <MAC>` |
+| 5 | 检查Continuation分页 | SDP RSP中Continuation State是否异常 |
+| 6 | 检查discovery_db大小 | `SDP_DISC_DB_SIZE`是否足够 |
+| 7 | 检查互操作数据库 | `interop_database.conf`中的设备特殊处理 |
 
-### 2.2 帧结构
-
-```
-┌──────────────────────────────────────────────────┐
-│ Basic L2CAP Frame (无FCS)                         │
-│ ┌──────────┬──────────┬──────────┬──────────────┐│
-│ │ Length(2)│ CID(2)   │ Payload  │              ││
-│ │ 小端序   │ 通道ID   │ (≤MTU)   │              ││
-│ └──────────┴──────────┴──────────┴──────────────┘│
-├──────────────────────────────────────────────────┤
-│ Standard L2CAP Frame (含FCS+Control)              │
-│ ┌──────────┬──────────┬──────────┬─────┬────────┐│
-│ │ Length(2)│ CID(2)   │ Control  │ FCS │ Payload│ │
-│ │          │          │ Word(2/4)│ (2) │        │ │
-│ └──────────┴──────────┴──────────┴─────┴────────┘│
-│ Control Word bits (ERTM模式):                     │
-│ ┌──────────┬──────────┬──────────┬──────────────┐│
-│ │ SAR(2)   │ ReqSeq(6)│ F(1)     │ TxSeq(6)  R(1)││
-│ └──────────┴──────────┴──────────┴──────────────┘│
-└──────────────────────────────────────────────────┘
-```
-
-**SAR (Segmentation And Reassembly) 分段指示** ([l2cdefs.h:L488-L498](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L488-L498))：
-
-| SAR值 | 常量 | 含义 |
-|-------|------|------|
-| `0x0000` | UNSEG_SDU | 不分段的完整SDU |
-| `0x4000` | START_SDU | 分段SDU的第一片 |
-| `0x8000` | END_SDU | 分段SDU的最后一片 |
-| `0xC000` | CONT_SDU | 分段SDU的中间片 |
-
-**S帧类型（监督帧）**：
-| 值 | 常量 | 含义 |
-|----|------|------|
-| `0x0000` | SUP_RR | Receiver Ready（确认接收） |
-| `0x0001` | SUP_REJ | Reject（拒绝，请求选择性重传） |
-| `0x0002` | SUP_RNR | Receiver Not Ready |
-| `0x0003` | SUP_SREJ | Selective Reject |
-
-**序列号范围**: 0-63 (`L2CAP_FCR_SEQ_MODULO = 0x3F`)，6bit窗口
-
-**默认MTU**: `L2CAP_DEFAULT_MTU = 672` ([l2cdefs.h:L402](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L402))
-
-**SDU最大长度**: Classic ≈ 8080, LE = 0xFFFF ([l2cdefs.h:L484-L486](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L484-L486))
-
----
-
-### 2.3 CID体系 — 通道标识
-
-[CID](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L306-L315) 长度为16位，分为固定CID和动态CID：
-
-**固定CID (0x0001-0x003F)**：
-
-| CID | 名称 | 用途 | 适用传输 |
-|-----|------|------|---------|
-| `0x0001` | SIGNALLING_CID | L2CAP信令通道（连接/配置/断开） | BR/EDR |
-| `0x0002` | CONNECTIONLESS_CID | 无连接数据通道 | BR/EDR |
-| `0x0004` | ATT_CID | ATT协议通道 (GATT) | LE |
-| `0x0005` | BLE_SIGNALLING_CID | BLE信令通道 | LE |
-| `0x0006` | SMP_CID | SMP安全管理通道 | LE |
-| `0x0007` | SMP_BR_CID | SMP over BR/EDR | BR/EDR |
-
-**标志位掩码表示** ([l2cdefs.h:L331-L349](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L331-L349))：
-
-```cpp
-#define L2CAP_FIXED_CHNL_SIG_BIT      (1 << L2CAP_SIGNALLING_CID)   // 0x02
-#define L2CAP_FIXED_CHNL_ATT_BIT      (1 << L2CAP_ATT_CID)          // 0x10
-#define L2CAP_FIXED_CHNL_BLE_SIG_BIT  (1 << L2CAP_BLE_SIGNALLING_CID) // 0x20
-#define L2CAP_FIXED_CHNL_SMP_BIT      (1 << L2CAP_SMP_CID)          // 0x40
-```
-
-**动态CID (0x0040-0xFFFF)**：
-- 范围：`L2CAP_BASE_APPL_CID = 0x0040` 开始
-- 分配方式：客户端发起连接请求时携带SourceCID，服务端返回DestinationCID
-- 每链路最多 `MAX_L2CAP_CHANNELS` 个（约200+）
-
-**车载Profile的典型CID使用**：
+### SOP2：L2CAP配置协商影响音频质量
 
 ```
-车机→手机 ACL连接:
-  ├── CID=0x0001 (Signalling)    ← 连接/断开/配置命令
-  ├── CID=0x0040 (AVDTP)         ← A2DP音频流控制+数据
-  ├── CID=0x0041 (AVRCP)         ← AVRCP控制命令
-  ├── CID=0x0042 (RFCOMM)        ← HFP/PBAP/MAP (RFCOMM在L2CAP之上)
-  ├── CID=0x0043 (HID Control)   ← HID控制通道
-  └── CID=0x0044 (HID Interrupt) ← HID数据通道
-
-BLE连接:
-  ├── CID=0x0004 (ATT)           ← GATT服务发现+属性读写
-  ├── CID=0x0005 (BLE Signalling)← BLE信令
-  └── CID=0x0006 (SMP)           ← BLE安全配对
+症状：A2DP音频卡顿 / AVRCP控制延迟大
+                    ┌─────────────────────┐
+                    │   音频质量异常        │
+                    └──────────┬──────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+     ┌────────────┐   ┌────────────┐   ┌────────────┐
+     │ MTU不匹配   │   │ FCR模式    │   │ RR调度     │
+     │ 分片过多    │   │ 协商失败   │   │ 不公平     │
+     └─────┬──────┘   └─────┬──────┘   └─────┬──────┘
+           │                │                │
+           ▼                ▼                ▼
+  检查CONFIG_RSP:    检查InfoRsp:      检查LCB:
+  MTU协商结果        ExtendedFeatures  round_robin_quota
+  是否一致?          0x08(ERTM)位      link_xmit_quota
+                    是否置位?
 ```
 
----
-
-### 2.4 命令体系
-
-L2CAP共定义**23种命令码** ([l2cdefs.h:L31-L53](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L31-L53))，通过CID=0x0001/0x0005传输：
-
-#### Classic信令命令 (CID=0x0001)
-
-| 命令码 | 命令 | 方向 | 功能 |
-|--------|------|------|------|
-| 0x01 | CMD_REJECT | 双向 | 拒绝未知命令 |
-| 0x02 | **CONN_REQ** | C→S | 请求建立通道（含PSM+SCID） |
-| 0x03 | **CONN_RSP** | S→C | 连接响应（含DCID+Result） |
-| 0x04 | **CONFIG_REQ** | 双向 | 协商通道参数(MTU/FCR/QoS) |
-| 0x05 | **CONFIG_RSP** | 双向 | 配置响应 |
-| 0x06 | **DISC_REQ** | 双向 | 断开通道请求 |
-| 0x07 | DISC_RSP | 双向 | 断开通道响应 |
-| 0x08/09 | ECHO_REQ/RSP | 双向 | 链路质量检测(Ping) |
-| 0x0A/0x0B | INFO_REQ/RSP | 双向 | 查询对端特性(ExtendedFeatures/FixedChannels) |
-
-#### BLE信令命令 (CID=0x0005)
-
-| 命令码 | 命令 | 功能 |
-|--------|------|------|
-| 0x12/0x13 | BLE_UPDATE_REQ/RSP | **连接参数更新** (Interval/Latency/Timeout) |
-| 0x14/0x15 | BLE_CREDIT_BASED_CONN_REQ/RES | BLE CoC连接 (单通道) |
-| 0x16 | BLE_FLOW_CTRL_CREDIT | CoC流控信用值 |
-| 0x17/0x18 | CREDIT_BASED_CONN_REQ/RES | **Enhanced CoC** (多通道, 5.2) |
-| 0x19/0x1A | CREDIT_BASED_RECONFIG_REQ/RES | CoC重配置(MTU/MPS变更) |
-
----
-
-### 2.5 通道建立流程
-
-```
-Client (发起方)                           Server (接受方)
-────────────────                    ────────────────
-L2CA_ConnectReq(PSM, ...)
-    ↓
-    CONN_REQ ───────────────────────────→
-      [PSM=0x0019(AVDTP), SCID=0x0040]
-                                         ↓ 检查PSM是否有listener
-                                         ←──────────────── CONN_RSP
-                                           [DCID=0x0041, SCID=0x0040, Result=OK]
-    ↓ 收到CONN_RSP
-    通道进入 CONFIG 状态
-    ↓
-    CONFIG_REQ ──────────────────────────→
-      [DCID=0x0041, MTU=895, FCR_Mode=Basic]
-                                         ↓ 协商参数
-                                         ←──────────────── CONFIG_RSP
-                                           [Result=OK, MTU=895]
-    ↓ 收到CONFIG_RSP
-    ↓
-    CONFIG_REQ ←──────────────────────────
-      [SCID=0x0040, MTU=895, FCR_Mode=Basic]
-    ↓ 处理对端配置
-    CONFIG_RSP ──────────────────────────→
-    ↓
-    通道进入 OPEN 状态 ← 数据可传输
-
-断开:
-    DISC_REQ ───────────────────────────→
-                                         ←──────────────── DISC_RSP
-    通道进入 CLOSED 状态
-```
-
-**关键各命令包格式**：
-
-```cpp
-// CONN_REQ = PSM(2) + SCID(2)          = 4字节 [l2cdefs.h:L64]
-// CONN_RSP = DCID(2) + SCID(2) + Result(2) + Status(2) = 8字节 [l2cdefs.h:L66]
-// CONFIG_REQ = DCID(2) + Flags(2) + Options...  [l2cdefs.h:L68]
-// DISC_REQ = DCID(2) + SCID(2)         = 4字节 [l2cdefs.h:L72]
-```
-
----
-
-### 2.6 配置选项
-
-L2CAP配置协商通过6种配置选项进行 ([l2cdefs.h:L374-L379](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L374-L379))：
-
-| Option ID | 名称 | 长度(字节) | 说明 |
-|-----------|------|-----------|------|
-| `0x01` | **MTU** | 2 | 最大传输单元，默认672 |
-| `0x02` | FLUSH_TOUT | 2 | 刷新超时 |
-| `0x03` | QOS | 22 | 服务质量参数（服务类型/Token速率/Pool大小/延迟） |
-| `0x04` | **FCR** | 9 | 流控/重传模式（Mode/TxWindow/MaxTransmit/RetransTimeout/MonitorTimeout/MPS） |
-| `0x05` | **FCS** | 1 | 帧校验序列开关（0=跳过,1=使用） |
-| `0x06` | EXT_FLOW | 16 | 扩展流规格 |
-
-**配置结果码**：
-| Result | 含义 |
-|--------|------|
-| L2CAP_CFG_OK=0 | 配置接受 |
-| L2CAP_CFG_UNACCEPTABLE_PARAMS=1 | 参数不可接受 |
-| L2CAP_CFG_FAILED_NO_REASON=2 | 未知原因失败 |
-| L2CAP_CFG_UNKNOWN_OPTIONS=3 | 未知选项 |
-| L2CAP_CFG_PENDING=4 | 挂起(等待上层决定) |
-
----
-
-### 2.7 FCR 重传模式
-
-[FCR选项结构](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cap_types.h#L80-L92)：
-
-```cpp
-typedef struct {
-  uint8_t  mode;             // FCR模式
-  uint8_t  tx_win_sz;        // 发送窗口大小 (1-63)
-  uint8_t  max_transmit;     // 最大重传次数
-  uint16_t rtrans_tout;      // 重传超时 (ms)
-  uint16_t mon_tout;         // 监视超时 (ms)
-  uint16_t mps;              // 最大PDU负载大小
-} tL2CAP_FCR_OPTS;
-```
-
-**三种可靠性模式**：
-
-| 模式 | mode值 | 重传 | 顺序保证 | 适用场景 |
-|------|--------|------|---------|---------|
-| **Basic Mode** | 0x00 | ❌ 无 | ❌ 无 | A2DP音频流/SDP（丢包无所谓） |
-| **ERTM** (Enhanced Retransmission) | 0x03 | ✅ 自动重传 | ✅ 保证 | AVRCP控制命令/蓝牙HID/ATT(GATT) |
-| **Streaming Mode** | 0x04 | ❌ 无 | ❌ 无但有FCS检测 | 单向音频/视频流 |
-| **LE CoC** | 0x05 | ❌ 无 | ❌ 无但支持流控(Credit) | BLE大文件传输/OTA |
-
-**ERTM关键机制**：
-
-```
-发送窗口 (tx_win_sz，默认10):
-  ┌───┬───┬───┬───┬───┬───┬───┬───┬───┬───┐
-  │ 0 │ 1 │ 2 │ 3 │ 4 │ 5 │ 6 │ 7 │ 8 │ 9 │ ← 10个PDU可同时发出不等ACK
-  └───┴───┴───┴───┴───┴───┴───┴───┴───┴───┘
-  ↑ TxSeq                            ↑ TxSeq+Win-1
-
-接收确认 (RR S-Frame):
-  ReqSeq=5 → 确认0-4已收到，窗口滑动到5-14
-
-选择性重传 (SREJ):
-  ReqSeq=5, SREJ=3 → 0-2、4已确认，需重传第3号PDU
-```
-
----
-
-### 2.8 三层控制块体系
-
-L2CAP采用**CCB→LCB→CB**三层树形控制块结构：
-
-```
-tL2C_CB (全局控制块, 单例)
-├── lcb_pool[MAX_L2CAP_LINKS]        ← Link Control Block 池
-│   ├── tL2C_LCB[0]                  ← 连接设备A的链路
-│   │   ├── ccb_queue                ← Channel Control Block 链表
-│   │   │   ├── tL2C_CCB (CID=0x0040, AVDTP)
-│   │   │   ├── tL2C_CCB (CID=0x0041, AVRCP)
-│   │   │   └── tL2C_CCB (CID=0x0042, RFCOMM)
-│   │   └── link_xmit_data_q         ← 链路发送队列
-│   ├── tL2C_LCB[1]                  ← 连接设备B的链路
-│   │   └── ...
-│   └── ...
-└── controller_xmit_window           ← ACL全局发送窗口
-```
-
-#### T2C_CB (全局控制块) — [l2c_int.h:L589-L609](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h#L589-L609)
-
-```cpp
-struct tL2C_CB {
-  uint16_t controller_xmit_window;   // 总ACL窗口
-  uint16_t round_robin_quota;        // Round-Robin链路配额
-  uint16_t round_robin_unacked;      // Round-Robin未确认包数
-  bool check_round_robin;            // 下一轮是否执行RR检查
-  tL2C_LCB lcb_pool[MAX_L2CAP_LINKS]; // LCB池
-  tL2C_CCB ccb_pool[MAX_L2CAP_CHANNELS]; // CCB池
-  ...
-};
-```
-
-#### T2C_LCB (链路控制块)
-
-[LCB](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h#L413-L585) 管理一条ACL链路上的所有通道：
-
-```cpp
-struct tL2C_LCB {
-  tL2C_LINK_STATE link_state;            // DISCONNECTED/CONNECTING/CONNECTED/DISCONNECTING
-  RawAddress remote_bd_addr;             // 远程设备MAC
-  uint16_t handle;                       // HCI Connection Handle
-
-  // 固定通道
-  tL2C_CCB* p_fixed_ccbs[L2CAP_NUM_FIXED_CHNLS];
-
-  // 动态通道
-  tL2C_CCB_Q ccb_queue;                 // 通道链表
-  uint16_t link_xmit_quota;             // 链路发送配额
-  uint16_t sent_not_acked;              // 已发送未确认包数
-
-  // 流量控制
-  tL2CAP_PRIORITY acl_priority;         // NORMAL/HIGH
-  tL2CAP_LATENCY acl_latency;           // NORMAL/LOW
-
-  // BLE特有
-  uint16_t min_interval, max_interval;  // BLE连接间隔
-  uint16_t latency, timeout;            // BLE延迟和超时
-  uint8_t conn_update_mask;             // 连接更新阻塞掩码
-
-  // Credit Based CoC 挂起状态
-  tL2CAP_LE_CFG_INFO pending_ecoc_reconfig_cfg;
-  uint16_t pending_ecoc_connection_cids[5];  // 最多5个通道
-  ...
-};
-```
-
-#### T2C_CCB (通道控制块)
-
-[CCB](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h#L267-L366) 管理一个逻辑通道：
-
-```cpp
-struct tL2C_CCB {
-  tL2C_CHNL_STATE chnl_state;     // 通道状态（CLOSED→...→OPEN）
-  tL2C_LCB* p_lcb;                // 所属链路
-  uint16_t local_cid;             // 本地CID
-  uint16_t remote_cid;            // 远端CID
-
-  // 配置
-  uint16_t peer_conn_mtu;         // 对方MTU
-  tL2CAP_CH_CFG_BITS our_cfg;    // 我方配置
-  tL2CAP_CH_CFG_BITS peer_cfg;   // 对方配置
-
-  // FCR (仅ERTM模式)
-  tL2CAP_FCRB fcrb;               // FCR接收缓冲
-  uint8_t bypass_fcs;             // FCS过滤标志
-
-  // 回调
-  tL2CAP_APPL_INFO* p_rcb;       // 注册回调（pL2CA_ConnectCfm_Cb等）
-};
-```
-
-**通道状态机** ([l2c_int.h:L73-L122](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h#L73-L122))：
-
-```
-CST_CLOSED ─→ CST_ORIG_W4_SEC_COMP ─→ CST_ORIG_W4_SEC_COMP_CL
-    ↑                                      ↓
-    │                                CST_W4_L2CAP_CONNECT_RSP
-    │                                      ↓
-    │                                CST_W4_L2CA_CONNECT_RSP
-    │                                      ↓
-    │                                CST_CONFIG ─→ CST_OPEN
-    │                                      ↓
-    │                                CST_DISCONNECTING
-    │                                      ↓
-    └──────────────────────────────────←────┘
-```
-
----
-
-### 2.9 Round-Robin 调度
-
-L2CAP全局层实现了多链路的**Round-Robin公平调度** ([l2c_int.h:L466-L468](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h#L466-L468))：
-
-```cpp
-uint16_t link_xmit_quota;    // 0 = 启用RoundRobin
-bool is_round_robin_scheduling() const { return link_xmit_quota == 0; }
-
-// 全局层
-bool is_classic_round_robin_quota_available() const {
-  return round_robin_unacked < round_robin_quota;
-}
-```
-
-**工作原理**：
-1. 每条链路link_xmit_quota=0时启用RR
-2. 全局`round_robin_quota`限制一轮中每条链路的最大发送包数
-3. 每轮遍历所有活跃链路，`check_round_robin`标志位驱动下一轮
-4. 优先级队列：每个优先级组内部采用Round-Robin
-
-**车载多Profile场景中的意义**：
-```
-车机同时有 A2DP(HIGH) + AVRCP(NORMAL) + PBAP(NORMAL) 三个L2CAP通道
-
-RoundRobin调度:
-  轮1: A2DP发送N个包 → AVRCP发送M个包 → PBAP发送K个包
-  轮2: A2DP发送N个包 → AVRCP发送M个包 → PBAP发送K个包
-  ...
-确保高优先级A2DP音频不被低优先级PBAP联系人下载阻塞
-```
-
----
-
-### 2.10 LE Credit Based CoC (L2CAP Connection Oriented Channel over LE)
-
-BLE 4.2引入的Credit Based CoC，允许在LE传输上建立面向连接的L2CAP通道：
-
-**建立流程** ([l2cdefs.h:L87-L92](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L87-L92))：
-
-```
-LE Credit Based Connection Request:
-  [LE_PSM(2) + SCID(2) + MTU(2) + MPS(2) + Initial_Credits(2)]
-   = 10字节
-
-LE Credit Based Connection Response:
-  [DCID(2) + MTU(2) + MPS(2) + Initial_Credits(2) + Result(2)]
-   = 10字节
-```
-
-**Credit流控机制**：
-```
-连接建立时分配 Initial_Credits (如10个)
-每发送一个LE帧 → Credit -1
-对端发送 LE_FLOW_CTRL_CREDIT → Credit +N
-Credit=0 → 停止发送，等待补充
-```
-
-**Enhanced CoC (BLE 5.2)** ([l2cdefs.h:L50-L53](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h#L50-L53))：
-- 一条请求可创建**最多5个通道** (`L2CAP_CREDIT_BASED_MAX_CIDS = 5`)
-- 支持运行时重配置（`CREDIT_BASED_RECONFIG_REQ`）
-- 重配置结果：不允许缩减MTU/MPS
-
-**LE CoC配置结构**：
-```cpp
-struct tL2CAP_LE_CFG_INFO {
-  tL2CAP_CFG_RESULT result;
-  uint16_t mtu;         // 默认 100 (kDefaultL2capMtu)
-  uint16_t mps;         // 默认 100 (kDefaultL2capMps)
-  uint16_t credits;     // 初始信用值
-  uint8_t  number_of_channels; // 默认 5
-};
-```
-
----
-
-### 2.11 拓展特性信息交换
-
-当对端支持Fixed Channels或Extended Features时，通过Info Req/Rsp交换：
-
-```cpp
-// L2CAP信息请求类型 [l2cdefs.h:L422-L427]
-#define L2CAP_CONNLESS_MTU_INFO_TYPE      0x0001  // 无连接MTU
-#define L2CAP_EXTENDED_FEATURES_INFO_TYPE 0x0002  // 扩展特性位
-#define L2CAP_FIXED_CHANNELS_INFO_TYPE    0x0003  // 固定通道掩码
-
-// 扩展特性位 [l2cdefs.h:L438-L451]
-#define L2CAP_EXTFEA_ENH_RETRANS   0x00000008  // ERTM
-#define L2CAP_EXTFEA_STREAM_MODE   0x00000010  // Streaming Mode
-#define L2CAP_EXTFEA_NO_CRC        0x00000020  // 可选FCS(关)
-#define L2CAP_EXTFEA_EXT_FLOW_SPEC 0x00000040  // 扩展流规格
-#define L2CAP_EXTFEA_FIXED_CHNLS  0x00000080  // 固定通道支持
-#define L2CAP_EXTFEA_EXT_WINDOW   0x00000100  // 扩展窗口(ERTM)
-```
-
-**车载Info交换常见问题**：
-- 部分旧手机不支持ExtendedFeatures→车机无法使用ERTM→AVRCP控制丢帧
-- 手机FixedChannels掩码缺少SMP_BR_CID→BR/EDR上的安全协商失败
-
----
-
-## 三、车载开发实战
-
-### 3.1 SDP常见问题
-
-| 问题 | 根因 | 排查方法 |
-|------|------|---------|
-| 手机搜不到车机A2DP | SDP未注册或UUID不匹配 | `sdptool browse` 查看车机SDP Record |
-| 车机发现手机PBAP慢 | ServiceSearchAttrReq超时 | 降低SDP超时或先用ServiceSearch缩小范围 |
-| SDP Buffer溢出 | discovery_db太小 | 增大`SDP_DISC_DB_SIZE`或分多次SDP搜索 |
-| PBAP PSE SDP无版本信息 | 旧手机SDP只写v1.1 | 检查interop_database.conf中的`INTEROP_ADV_PBAP_VER_1_2`互操作标记 |
-
-### 3.2 L2CAP常见问题
+**关键排查表**：
 
 | 问题 | 根因 | 排查方法 |
 |------|------|---------|
@@ -810,64 +657,182 @@ struct tL2CAP_LE_CFG_INFO {
 | 车机多个Profile同时连接慢 | RR调度quota不均匀 | 检查`round_robin_quota`和`round_robin_unacked` |
 | 连接被拒: CONN_NO_PSM | PSM未注册listener | 确认上层Profile是否正确调用了`L2CA_RegisterLECoc()`或RFCOMM创建 |
 | BLE GATT服务发现失败 | FixedChannels缺少ATT_CID | 查看InfoRsp FixedChannels掩码是否有0x10位 |
-| CONN_TIMEOUT (0xEEEE) | 对方长时间无响应 | 排查手机端L2CAP层是否卡住(如BT_HCI_ERR_CONNECTION_TIMEOUT) |
-
-### 3.3 调试命令
-
-```bash
-# SDP - 发现远程设备服务
-sdptool browse <MAC>                    # 浏览所有服务
-sdptool search --bdaddr <MAC> A2SNK    # 搜索A2DP Sink
-sdptool search --bdaddr <MAC> HFAG     # 搜索HFP AG
-
-# L2CAP - 连接状态
-adb shell cat /sys/kernel/debug/bluetooth/l2cap
-adb shell dumpsys bluetooth_manager | grep -A 5 "l2cap"
-```
+| CONN_TIMEOUT (0xEEEE) | 对方长时间无响应 | 排查手机端L2CAP层是否卡住 |
+| SDP Buffer溢出 | discovery_db太小 | 增大`SDP_DISC_DB_SIZE`或分多次SDP搜索 |
+| PBAP PSE SDP无版本信息 | 旧手机SDP只写v1.1 | 检查interop_database.conf中的`INTEROP_ADV_PBAP_VER_1_2` |
 
 ---
 
-## 四、关键源代码文件索引
+## 🛠️ 动手练习
 
-### SDP 核心 (9个文件)
+### 练习1：SDP数据元素编码实战
 
-| 文件 | 路径 |
-|------|------|
-| sdpint.h (内部定义) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdpint.h) |
-| sdpdefs.h (常量定义) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdpdefs.h) |
-| sdp_discovery_db.h (发现DB) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery_db.h) |
-| sdp_discovery.cc (远程发现) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery.cc) |
-| sdp_server.cc (服务端) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_server.cc) |
-| sdp_db.cc (本地DB) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_db.cc) |
-| sdp_utils.cc (工具) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_utils.cc) |
-| sdp_api.h (API声明) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdp_api.h) |
-| sdp_status.h (状态码) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdp_status.h) |
+给定以下SDP属性数据，手动编码为字节序列：
+
+```
+输入：
+  ServiceClassIDList = { UUID16: 0x110B (A2DP Sink), UUID16: 0x111E (HFP HF) }
+
+要求：
+  1. 编码为完整的Data Element Sequence
+  2. 写出每个字节的十六进制值
+  3. 标注每个字节的含义
+```
+
+<details>
+<summary>参考答案</summary>
+
+```
+35          ← DES头: (DATA_ELE_SEQ_DESC_TYPE=6 << 3) | SIZE_IN_NEXT_BYTE=5
+0A          ← 序列总长=10字节 (2个UUID各5字节: 1+2 + 1+2 = 10... 不对，各3字节=6)
+
+修正：
+35          ← DES头: Type=SEQ(6), Size=5(下1字节)
+06          ← 序列总长=6字节
+19 11 0B    ← UUID16: Type=UUID(3), Size=TWO(1), Value=0x110B
+19 11 1E    ← UUID16: Type=UUID(3), Size=TWO(1), Value=0x111E
+
+完整编码: 35 06 19 11 0B 19 11 1E
+```
+</details>
+
+### 练习2：L2CAP通道状态追踪
+
+给定以下HCI Log片段，追踪CCB状态变化：
+
+```
+[10:00:01.000] L2CAP TX: CONN_REQ [PSM=0x0019, SCID=0x0040]
+[10:00:01.050] L2CAP RX: CONN_RSP [DCID=0x0041, SCID=0x0040, Result=0x0000]
+[10:00:01.100] L2CAP TX: CONFIG_REQ [DCID=0x0041, MTU=895, FCR=Basic]
+[10:00:01.150] L2CAP RX: CONFIG_RSP [Result=OK, MTU=895]
+[10:00:01.200] L2CAP RX: CONFIG_REQ [SCID=0x0040, MTU=672]
+[10:00:01.250] L2CAP TX: CONFIG_RSP [Result=OK]
+```
+
+**问题**：
+1. 每个时间点CCB的`chnl_state`是什么？
+2. 何时`config_done`标志位变化？
+3. 何时数据可以开始传输？
+
+<details>
+<summary>参考答案</summary>
+
+```
+10:00:01.000  CST_ORIG_W4_SEC_COMP → CST_W4_L2CAP_CONNECT_RSP
+10:00:01.050  CST_W4_L2CAP_CONNECT_RSP → CST_CONFIG
+10:00:01.100  CST_CONFIG (发出我方配置)
+10:00:01.150  CST_CONFIG (收到对端CONFIG_RSP) → config_done |= OB_CFG_DONE
+10:00:01.200  CST_CONFIG (收到对端CONFIG_REQ)
+10:00:01.250  CST_CONFIG (回复CONFIG_RSP) → config_done |= IB_CFG_DONE
+              → IB_CFG_DONE & OB_CFG_DONE → CST_OPEN
+
+数据在10:00:01.250之后可以开始传输
+```
+</details>
+
+### 练习3：ERTM窗口模拟
+
+假设ERTM配置：`tx_win_sz=4`, 初始TxSeq=0：
+
+```
+发送方依次发出: PDU[0], PDU[1], PDU[2], PDU[3]
+收到 RR(ReqSeq=2): 确认了哪些？窗口如何滑动？
+再发出: PDU[4], PDU[5]
+收到 SREJ(ReqSeq=4, SREJ=3): 需要做什么？
+```
+
+<details>
+<summary>参考答案</summary>
+
+```
+1. 收到RR(ReqSeq=2):
+   - 确认PDU[0]和PDU[1]已收到
+   - 窗口滑动: TxSeq=2, 可发PDU[2,3,4,5]
+   
+2. 发出PDU[4], PDU[5]:
+   - 当前在途: PDU[2], PDU[3], PDU[4], PDU[5]
+   
+3. 收到SREJ(ReqSeq=4, SREJ=3):
+   - ReqSeq=4: PDU[2]已确认（0-2已收到，跳过3收到4+）
+   - SREJ=3: 请求重传PDU[3]
+   - 动作: 重传PDU[3]，然后继续正常发送
+```
+</details>
+
+---
+
+## 📚 关键源码索引
+
+### SDP核心 (9个文件)
+
+| 文件 | 路径 | 核心内容 |
+|------|------|---------|
+| [sdpint.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdpint.h) | stack/sdp/ | PDU定义(L51-L57)、tCONN_CB(L177-L212)、tSDP_CB(L227-L234) |
+| [sdp_discovery_db.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery_db.h) | stack/sdp/ | tSDP_DISCOVERY_DB(L66-L78)、tSDP_DISC_REC(L56-L61)、tSDP_DISC_ATTR(L49-L54) |
+| [sdpdefs.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdpdefs.h) | stack/include/ | Attribute ID(L35-L45)、Data Element类型 |
+| [sdp_api.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdp_api.h) | stack/include/ | SDP API声明 |
+| [sdp_discovery.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_discovery.cc) | stack/sdp/ | 远程服务发现、sdpu_build_uuid_seq(L59-L100)、构建SearchAttrReq(L652-L720) |
+| [sdp_server.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_server.cc) | stack/sdp/ | 本地服务请求响应 |
+| [sdp_db.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_db.cc) | stack/sdp/ | 本地服务数据库操作 |
+| [sdp_utils.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/sdp/sdp_utils.cc) | stack/sdp/ | 数据元素编解码工具 |
+| [sdp_status.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/sdp_status.h) | stack/include/ | SDP状态码定义 |
 
 ### SDP BTA/BTIF层
 
 | 文件 | 路径 |
 |------|------|
-| bta_sdp_int.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/sdp/bta_sdp_int.h) |
-| bta_sdp_act.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/sdp/bta_sdp_act.cc) |
-| btif_sdp.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_sdp.cc) |
-| btif_sock_sdp.h | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/include/btif_sock_sdp.h) |
-| SdpManager.java | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/src/com/android/bluetooth/sdp/SdpManager.java) |
+| [bta_sdp_int.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/sdp/bta_sdp_int.h) | bta/sdp/ |
+| [bta_sdp_act.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/bta/sdp/bta_sdp_act.cc) | bta/sdp/ |
+| [btif_sdp.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/btif/src/btif_sdp.cc) | btif/src/ |
+| [com_android_bluetooth_sdp.cpp](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/jni/com_android_bluetooth_sdp.cpp) | android/app/jni/ |
+| [SdpManager.java](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/android/app/src/com/android/bluetooth/sdp/SdpManager.java) | android/app/.../sdp/ |
 
-### L2CAP 核心 (14个文件)
+### L2CAP核心 (14个文件)
 
-| 文件 | 路径 |
-|------|------|
-| l2c_int.h (内部定义-CCB/LCB/CB) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h) |
-| l2cdefs.h (协议常量) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h) |
-| l2c_csm.cc (通道状态机) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_csm.cc) |
-| l2c_fcr.cc (FCR重传) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_fcr.cc) |
-| l2c_link.cc (链路管理) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_link.cc) |
-| l2c_main.cc (主模块) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_main.cc) |
-| l2c_utils.cc (工具) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_utils.cc) |
-| l2c_ble.cc (BLE信令) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_ble.cc) |
-| l2c_ble_conn_params.cc | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_ble_conn_params.cc) |
-| l2c_api.h (API声明) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_api.h) |
-| l2c_api.cc (API实现) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_api.cc) |
-| l2cap_interface.h (Interface虚基类) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cap_interface.h) |
-| l2cap_types.h (类型定义) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cap_types.h) |
-| l2cap_packets.pdl (PDL定义) | [link](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/pdl/l2cap/l2cap_packets.pdl) |
+| 文件 | 路径 | 核心内容 |
+|------|------|---------|
+| [l2c_int.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_int.h) | stack/l2cap/ | 通道状态(L73-L83)、tL2C_CCB(L268-L366)、tL2C_LCB(L413-L585)、tL2C_CB(L589-L648) |
+| [l2cdefs.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cdefs.h) | stack/include/ | 命令码(L31-L53)、CID(L306-L315)、配置选项(L374-L379)、FCR常量(L488-L543) |
+| [l2cap_types.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cap_types.h) | stack/include/ | tL2CAP_FCR_OPTS(L80-L92)、kDefaultErtmOptions(L95-L102) |
+| [l2c_csm.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_csm.cc) | stack/l2cap/ | 通道状态机 |
+| [l2c_fcr.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_fcr.cc) | stack/l2cap/ | FCR重传机制 |
+| [l2c_link.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_link.cc) | stack/l2cap/ | 链路管理 |
+| [l2c_main.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_main.cc) | stack/l2cap/ | L2CAP主模块 |
+| [l2c_utils.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_utils.cc) | stack/l2cap/ | 工具函数 |
+| [l2c_ble.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_ble.cc) | stack/l2cap/ | BLE信令处理 |
+| [l2c_ble_conn_params.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_ble_conn_params.cc) | stack/l2cap/ | BLE连接参数 |
+| [l2c_api.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_api.h) | stack/l2cap/ | L2CAP API声明 |
+| [l2c_api.cc](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/l2cap/l2c_api.cc) | stack/l2cap/ | L2CAP API实现 |
+| [l2cap_interface.h](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/stack/include/l2cap_interface.h) | stack/include/ | Interface虚基类 |
+| [l2cap_packets.pdl](file:///d:/AndroidWorkspace/claudeProject/BT16Study/Bluetooth/system/pdl/l2cap/l2cap_packets.pdl) | pdl/l2cap/ | PDL包定义 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | SDP 7种PDU类型完整列出（ServiceSearchReq/Rsp, ServiceAttrReq/Rsp, ServiceSearchAttrReq/Rsp, SDP_ErrorRsp） | ✅ |
+| 2 | SDP数据元素TLV编码说明：(Tag\|Size)+Value，5种SizeDescriptor(1/2/4/8/16字节) | ✅ |
+| 3 | SDP属性体系：ServiceClassIdList/ProtocolDescriptorList/BrowseGroupList等 | ✅ |
+| 4 | tSDP_DISCOVERY_DB发现数据库：结构化存储查询结果 | ✅ |
+| 5 | tCONN_CB连接控制块 | ✅ |
+| 6 | L2CAP 23种命令码完整列出 | ✅ |
+| 7 | L2CAP CID体系：6个Fixed CID(0x0001信令/0x0002连接less/0x0003AMP/0x0004ATT/0x0005SMP/0x0006SMP_LE) | ✅ |
+| 8 | L2CAP配置选项：MTU/FCR/FCS | ✅ |
+| 9 | FCR三种模式：Basic(无重传)/ERTM(可靠重传)/Streaming(单向可靠) | ✅ |
+| 10 | L2CAP三层控制块：CCB(通道)→LCB(链路)→CB(全局) | ✅ |
+| 11 | RoundRobin调度：多通道公平性 | ✅ |
+| 12 | Credit Based CoC(5.2)：一对多通道+流控信用值 | ✅ |
+| 13 | 车载排查指南 | ✅ |
+| 14 | Mermaid图：SDP/L2CAP分层架构graph TD | ✅ |
+| 15 | Mermaid图：SDP查询时序sequenceDiagram | ✅ |
+| 16 | Mermaid图：L2CAP状态图stateDiagram-v2 | ✅ |
+| 17 | 代码导航表 | ✅ |
+| 18 | 至少5个带逐行注释的代码片段 | ✅ (7个) |
+| 19 | 至少2个C++知识卡片 | ✅ |
+| 20 | Java↔C++对照表 | ✅ |
+| 21 | 问题排查SOP | ✅ |
+| 22 | 动手练习 | ✅ |
+| 23 | 关键源码索引 | ✅ |
+| 24 | 源码行号参考准确 | ✅ |
