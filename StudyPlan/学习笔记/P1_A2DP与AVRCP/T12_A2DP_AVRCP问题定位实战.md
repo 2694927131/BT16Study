@@ -606,3 +606,20 @@ void Reset() {
 | 9 | system/bta/av/bta_av_aact.cc | L3087-3116 | bta_av_vendor_offload_start() | Offload启动 |
 | 10 | system/stack/include/avdt_api.h | L208-250 | AVDT_ERR_* | AVDTP错误码定义 |
 | 11 | system/gd/hal/snoop_logger.cc | L972-984 | IsA2dpMediaPacket() | Snoop A2DP过滤 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 8个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 7个带逐行注释的代码片段（7个C++） |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 3个 |
+| 4 | Java↔C++对照表 | ✅ 6项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 2个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 11项 |
+| 9 | 前置知识 | ✅ T08、T09、T10、T11 |
+| 10 | 车载场景 | ✅ 车载A2DP/AVRCP问题定位（日志三板斧、dumpsys、HCI Snoop） |

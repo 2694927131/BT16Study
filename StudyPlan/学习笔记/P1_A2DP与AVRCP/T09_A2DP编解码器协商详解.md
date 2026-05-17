@@ -622,3 +622,20 @@ codec->setCodecConfig(...);  // 调用子类的实现
 | 12 | system/btif/co/bta_av_co.cc | L765-856 | SetCodecUserConfig() | 协调器入口 |
 | 13 | system/btif/src/btif_av.cc | L3639-3680 | btif_av_source_set_codec_config_preference() | 外部设置入口 |
 | 14 | system/btif/src/btif_av.cc | L2999-3022 | btif_av_query_mandatory_codec_priority() | SBC偏好查询 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 4个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 10个带逐行注释的代码片段（10个C++） |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 4个 |
+| 4 | Java↔C++对照表 | ✅ 4项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 1个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 14项 |
+| 9 | 前置知识 | ✅ T08 |
+| 10 | 车载场景 | ✅ 车载编解码器选择（强制LDAC高音质/SBC兼容） |

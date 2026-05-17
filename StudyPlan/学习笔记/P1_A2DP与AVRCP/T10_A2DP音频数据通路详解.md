@@ -659,3 +659,20 @@ alarm_cancel(media_alarm);
 | 15 | system/bta/av/bta_av_aact.cc | L2103-2223 | bta_av_data_path() | 数据通路核心 |
 | 16 | system/bta/av/bta_av_aact.cc | L3213-3240 | bta_av_offload_req() | Offload请求 |
 | 17 | system/btif/co/bta_av_co.cc | L608-650 | GetNextSourceDataPacket() | RTP构建 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 4个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 11个带逐行注释的代码片段（11个C++） |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 4个 |
+| 4 | Java↔C++对照表 | ✅ 5项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 1个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 17项 |
+| 9 | 前置知识 | ✅ T08、T09 |
+| 10 | 车载场景 | ✅ 车载蓝牙音乐卡顿/无声音定位 |

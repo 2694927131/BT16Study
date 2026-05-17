@@ -723,3 +723,20 @@ do_in_jni_thread(base::BindOnce(
 | 15 | system/bta/av/bta_av_ssm.cc | L78-484 | bta_av_ssm_execute() | BTA流状态机核心 |
 | 16 | system/stack/avdt/avdt_api.cc | L887-919 | AVDT_ConnectReq() | AVDTP信令连接 |
 | 17 | android/app/jni/com_android_bluetooth_a2dp.cpp | L92-115 | bta2dp_connection_state_callback() | JNI上行回调 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 4个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 15个带逐行注释的代码片段（14个C++ + 1个Java） |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 4个 |
+| 4 | Java↔C++对照表 | ✅ 6项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 1个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 17项 |
+| 9 | 前置知识 | ✅ T01、T02 |
+| 10 | 车载场景 | ✅ 车载蓝牙音乐连接、A2DP连接卡住排查 |

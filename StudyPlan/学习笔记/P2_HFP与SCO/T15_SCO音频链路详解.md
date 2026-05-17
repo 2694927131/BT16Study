@@ -769,3 +769,20 @@ osi_property_set("vendor.sco.i2s", "true");
 | 11 | system/bta/ag/bta_ag_swb_aptx.cc | L50-100 | SWB aptX处理 | aptX Voice编解码器 |
 | 12 | system/btif/src/btif_hf.cc | L250-280 | connect_audio() | 音频连接入口 |
 | 13 | system/btif/src/btif_hf.cc | L600-630 | btif_hf_set_nrec() | NREC降噪控制 |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 6个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 11个带逐行注释的代码片段（11个C++） |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 4个 |
+| 4 | Java↔C++对照表 | ✅ 8项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 1个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 13项 |
+| 9 | 前置知识 | ✅ T13、T14 |
+| 10 | 车载场景 | ✅ 车载通话音质、SCO链路、I2S路由、NREC降噪 |

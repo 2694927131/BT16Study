@@ -694,3 +694,20 @@ tBTM_STATUS BTM_CreateSco(const RawAddress* remote_bda, bool is_orig,
 | 12 | system/stack/btm/btm_sco.cc | L989-1055 | btm_sco_connected() | SCO连接成功 |
 | 13 | system/stack/btm/btm_sco.cc | L1099-1148 | btm_sco_connection_failed() | SCO连接失败 |
 | 14 | system/stack/btm/btm_sco.cc | L1723-1768 | BTM_GetScoDebugDump() | SCO调试dump |
+
+---
+
+## ✅ 质量检查清单
+
+| # | 检查项 | 状态 |
+|---|--------|------|
+| 1 | Mermaid图 ≥ 3个 | ✅ 7个 |
+| 2 | 代码片段 ≥ 5个 | ✅ 9个带逐行注释的代码片段（9个C++） |
+| 3 | C++知识卡片 ≥ 2个 | ✅ 4个 |
+| 4 | Java↔C++对照表 | ✅ 6项对照 |
+| 5 | 行号标注 | ✅ 所有关键函数标注文件:行号 |
+| 6 | 问题排查SOP | ✅ 2个SOP |
+| 7 | 动手练习 | ✅ 🟢🟡🔴 3级 |
+| 8 | 代码导航表 | ✅ 14项 |
+| 9 | 前置知识 | ✅ T13、T14、T15 |
+| 10 | 车载场景 | ✅ 车载HFP问题定位（四Tag日志、SCO Debug Dump、I2S路由调试） |
