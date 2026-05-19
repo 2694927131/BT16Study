@@ -356,18 +356,38 @@ Buffer& operator=(Buffer&& other) noexcept {
 }
 ```
 
-### 4.3 noexcept 的重要性
+### 4.3 noexcept 关键字详解
 
-移动操作通常应该标记为 `noexcept`。原因：**`std::vector` 扩容时的策略选择**。
+`noexcept` 是 C++11 引入的关键字，用于**承诺函数不会抛出异常**。在移动语义中，`noexcept` 尤为重要。
+
+#### 4.3.1 noexcept 的语法
+
+```cpp
+// 方式一：noexcept 说明符（承诺不抛异常）
+void func() noexcept;                    // 承诺不抛异常
+void func() noexcept(true);              // 等价写法，条件为 true
+
+// 方式二：条件 noexcept
+void func() noexcept(noexcept(expr));    // 如果 expr 是 noexcept，则函数也是
+
+// 方式三：noexcept 运算符（编译期检查表达式是否可能抛异常）
+static_assert(noexcept(func()));         // 编译期检查 func() 是否 noexcept
+```
+
+如果标记为 `noexcept` 的函数确实抛出了异常，`std::terminate()` 会被调用，程序直接终止——不会进行栈展开。
+
+#### 4.3.2 为什么移动操作必须加 noexcept？
+
+**核心原因：`std::vector` 扩容时的策略选择。**
 
 当 `vector` 需要扩容时，它要把旧元素搬到新内存。它有两个选择：
 
-| 元素的移动构造函数 | vector 的行为 |
-|---|---|
-| `noexcept` | 使用移动构造（O(n)，快） |
-| 非 `noexcept` | 使用拷贝构造（O(n)，慢但安全） |
+| 元素的移动构造函数 | vector 的行为 | 性能 |
+|---|---|---|
+| `noexcept` | 使用**移动构造** | O(n)，快 |
+| 非 `noexcept` | 使用**拷贝构造** | O(n)，慢但安全 |
 
-为什么？因为如果移动构造函数抛出异常，旧内存已经被破坏（部分元素被移走了），新内存又不完整——数据就丢失了。拷贝构造则不会破坏旧数据，即使抛异常也能回滚。
+**为什么？** 如果移动构造函数抛出异常，旧内存已经被破坏（部分元素被移走了），新内存又不完整——数据就丢失了。拷贝构造则不会破坏旧数据，即使抛异常也能回滚。
 
 ```cpp
 // ❌ 没有 noexcept，vector 扩容时不敢用移动
@@ -376,6 +396,95 @@ Buffer(Buffer&& other);
 // ✅ 有 noexcept，vector 扩容时放心用移动
 Buffer(Buffer&& other) noexcept;
 ```
+
+**实际影响**：如果你的类没有给移动构造函数加 `noexcept`，在 `std::vector` 扩容时会退化为拷贝操作，性能可能大幅下降——这正是移动语义想要避免的！
+
+#### 4.3.3 蓝牙协议栈中的真实示例
+
+**示例 1：LeDevice 的移动操作**
+
+```cpp
+// 来源: system/gd/storage/le_device.h:34-39
+class LeDevice {
+public:
+  LeDevice(LeDevice&& other) noexcept = default;
+  LeDevice& operator=(LeDevice&& other) noexcept = default;
+
+  // 拷贝操作也标记 noexcept
+  LeDevice(const LeDevice& other) noexcept = default;
+  LeDevice& operator=(const LeDevice& other) noexcept = default;
+};
+```
+
+**解读**：
+- 移动构造和移动赋值都标记了 `noexcept`，确保 `std::vector<LeDevice>` 扩容时使用移动而非拷贝
+- 拷贝操作也标记了 `noexcept`，因为 `LeDevice` 的成员（指针和 `std::string`）的拷贝不会抛异常
+- 使用 `= default` 让编译器生成实现，编译器会根据成员类型自动推导 `noexcept` 性质
+
+**示例 2：Device 的移动操作**
+
+```cpp
+// 来源: system/gd/storage/device.h:136-141
+class Device {
+public:
+  Device(Device&& other) noexcept = default;
+  Device& operator=(Device&& other) noexcept = default;
+};
+```
+
+**解读**：与 `LeDevice` 模式一致，移动操作标记 `noexcept`，确保容器操作的性能。
+
+**示例 3：哈希函数中的 noexcept**
+
+```cpp
+// 来源: system/gd/storage/le_device.h:100
+std::size_t operator()(const bluetooth::storage::LeDevice& val) const noexcept
+```
+
+**解读**：
+- 这是 `std::hash` 的特化，用于将 `LeDevice` 放入 `std::unordered_map` 等哈希容器
+- 哈希函数标记 `noexcept` 是因为：哈希容器的内部操作（如 rehash）假设哈希函数不会抛异常
+- 如果哈希函数抛异常，哈希容器可能进入不一致状态
+
+#### 4.3.4 何时使用 noexcept？
+
+| 场景 | 是否加 noexcept | 原因 |
+|------|----------------|------|
+| 移动构造函数 | ✅ **必须加** | vector 扩容策略依赖它 |
+| 移动赋值运算符 | ✅ **必须加** | 同上 |
+| swap 函数 | ✅ 推荐加 | 许多算法假设 swap 不抛异常 |
+| 析构函数 | 自动 noexcept（C++11 起） | 编译器默认添加 |
+| 哈希函数 | ✅ 推荐加 | 哈希容器依赖它 |
+| 普通业务函数 | ❌ 谨慎使用 | 如果可能抛异常，不要加 noexcept |
+
+**注意**：`noexcept` 是一个**承诺**。一旦你标记了 `noexcept`，就必须确保函数真的不会抛异常。如果违反承诺，程序会直接终止。因此，不要轻易给可能抛异常的函数加 `noexcept`。
+
+#### ☕ Java 类比
+
+| 特性 | C++ `noexcept` | Java |
+|------|----------------|------|
+| 语法 | `void func() noexcept;` | ❌ **没有等价关键字** |
+| 含义 | 承诺不抛异常 | 不适用 |
+| 违反承诺 | `std::terminate()` 终止程序 | 不适用 |
+| 异常声明 | `noexcept` vs 无 | `throws` 声明（检查异常） |
+
+Java **没有 `noexcept`**，因为 Java 的所有方法都可以抛出异常（`RuntimeException` 及其子类无需声明），不存在"承诺不抛异常"的机制。
+
+```cpp
+// C++: noexcept 承诺不抛异常，影响 vector 扩容策略
+LeDevice(LeDevice&& other) noexcept = default;
+```
+
+```java
+// Java: 没有等价机制
+// Java 的 ArrayList 扩容时只复制引用（4/8 字节），不存在"移动 vs 拷贝"的选择
+// 因此不需要 noexcept 来指导策略
+```
+
+**关键差异**：
+- C++ 的 `noexcept` 直接影响标准库的行为（如 `vector` 扩容策略），是性能相关的关键关键字
+- Java 的 `ArrayList` 存储引用，扩容只复制引用数组，不存在深拷贝问题，不需要 `noexcept`
+- C++ 的 `noexcept` 是编译期承诺，违反会导致程序终止；Java 没有这种机制
 
 ### 4.4 蓝牙协议栈中的真实示例
 
@@ -1223,7 +1332,7 @@ void wrapper(T&& arg) {
 | `std::move` | 无条件转右值引用 | `std::string b = std::move(a);` | 不需要 |
 | 右值引用`T&&` | 捕获右值，启用移动 | `void func(std::string&& s);` | 不适用 |
 | 移动构造 | 从源对象窃取资源 | `T(T&& other) noexcept;` | 不需要 |
-| `noexcept` | 承诺不抛异常 | `T(T&& other) noexcept;` | 不适用 |
+| `noexcept` | 承诺不抛异常，影响vector扩容策略 | `T(T&& other) noexcept;` | 不适用 |
 | `std::forward` | 有条件转发，保持值类别 | `std::forward<T>(arg)` | 不需要 |
 | `=delete` | 禁止函数 | `T(const T&) = delete;` | `private`构造函数 |
 | `=default` | 显式默认实现 | `T() = default;` | 自动提供 |

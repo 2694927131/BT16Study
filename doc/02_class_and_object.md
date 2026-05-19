@@ -10,14 +10,16 @@
 
 1. [类的定义与基本结构](#1-类的定义与基本结构)
 2. [构造函数](#2-构造函数)
-3. [析构函数](#3-析构函数)
-4. [this 指针](#4-this-指针)
-5. [const 成员函数](#5-const-成员函数)
-6. [static 成员](#6-static-成员)
-7. [final 关键字](#7-final-关键字)
-8. [内联函数 inline](#8-内联函数-inline)
-9. [嵌套类型与内部定义](#9-嵌套类型与内部定义)
-10. [实际阅读建议](#10-实际阅读建议)
+3. [explicit 关键字](#3-explicit-关键字)
+4. [默认参数](#4-默认参数)
+5. [析构函数](#5-析构函数)
+6. [this 指针](#6-this-指针)
+7. [const 成员函数](#7-const-成员函数)
+8. [static 成员](#8-static-成员)
+9. [final 关键字](#9-final-关键字)
+10. [内联函数 inline](#10-内联函数-inline)
+11. [嵌套类型与内部定义](#11-嵌套类型与内部定义)
+12. [实际阅读建议](#12-实际阅读建议)
 
 ---
 
@@ -294,9 +296,270 @@ public EattChannel(RawAddress bda, int cid, int txMtu, int rxMtu) {
 
 ---
 
-## 3. 析构函数
+## 3. explicit 关键字
 
-### 3.1 什么是析构函数？
+### 3.1 什么是隐式类型转换？
+
+在 C++ 中，如果构造函数只接受一个参数（或除第一个参数外其他参数都有默认值），编译器可以**自动**将该参数类型的值隐式转换为类对象：
+
+```cpp
+class LegacyConfigFile {
+public:
+  LegacyConfigFile(std::string path);  // 隐式转换构造函数
+};
+
+// 隐式转换：编译器自动把 string 转为 LegacyConfigFile
+void process_config(LegacyConfigFile config);
+process_config("/data/bluetooth/config");  // 编译器自动调用构造函数！
+```
+
+这种隐式转换有时很方便，但更多时候会导致**意想不到的行为**和**难以发现的 bug**。
+
+### 3.2 explicit 的作用
+
+`explicit` 关键字放在构造函数声明前，**禁止**编译器进行隐式类型转换：
+
+```cpp
+class LegacyConfigFile {
+public:
+  explicit LegacyConfigFile(std::string path);  // 禁止隐式转换
+};
+
+process_config("/data/bluetooth/config");  // ❌ 编译错误！不能隐式转换
+process_config(LegacyConfigFile("/data/bluetooth/config"));  // ✅ 显式构造
+```
+
+**规则**：只允许**显式**构造对象，不允许编译器"偷偷"帮你转换。
+
+### 3.3 真实代码示例
+
+**示例 1：LegacyConfigFile**
+
+```cpp
+// 来源: system/gd/storage/legacy_config_file.h:30
+explicit LegacyConfigFile(std::string path);
+```
+
+**解读**：`LegacyConfigFile` 表示一个蓝牙配置文件，构造它需要传入文件路径。加 `explicit` 是因为把一个 `std::string` "自动"变成一个配置文件对象是不合理的——这应该是一个有意识的操作。
+
+**示例 2：ConfigCacheHelper**
+
+```cpp
+// 来源: system/gd/storage/config_cache_helper.h:44
+explicit ConfigCacheHelper(ConfigCache& config_cache)
+```
+
+**解读**：`ConfigCacheHelper` 是配置缓存的辅助类，构造时需要传入一个 `ConfigCache` 引用。加 `explicit` 防止意外地把 `ConfigCache` 对象当作 `ConfigCacheHelper` 使用——两者虽然相关，但不是同一概念。
+
+**示例 3：RawBuilder 的多个 explicit 构造函数**
+
+```cpp
+// 来源: system/gd/packet/raw_builder.h:32-33
+explicit RawBuilder(size_t max_bytes);
+explicit RawBuilder(std::vector<uint8_t> vec);
+```
+
+**解读**：`RawBuilder` 用于构建原始蓝牙数据包。它有两个单参数构造函数：
+- `RawBuilder(size_t max_bytes)`：创建指定大小的空缓冲区
+- `RawBuilder(std::vector<uint8_t> vec)`：从字节数组创建
+
+两个构造函数都加了 `explicit`，防止 `size_t` 或 `vector<uint8_t>` 被意外转换为 `RawBuilder` 对象。
+
+### 3.4 何时使用 explicit？
+
+| 场景 | 是否需要 explicit | 原因 |
+|------|------------------|------|
+| 单参数构造函数 | ✅ **必须加** | 防止意外的隐式转换 |
+| 多参数构造函数 | 可选 | C++11 之前多参数无隐式转换，C++11 后也可加 |
+| 拷贝/移动构造函数 | ❌ 不要加 | 会阻止拷贝/移动的正常使用 |
+| 工厂风格的构造函数 | ✅ 推荐加 | 如 `RawBuilder(size_t)` |
+
+**Google C++ 代码风格要求**：几乎所有单参数构造函数都应标记为 `explicit`。
+
+### ☕ Java 类比
+
+| 特性 | C++ `explicit` | Java |
+|------|---------------|------|
+| 隐式类型转换 | `explicit` 禁止 | ❌ **Java 没有隐式类型转换** |
+| 替代方案 | — | `private` 构造函数 + 静态工厂方法 |
+
+Java **没有隐式类型转换构造函数**的问题，因为 Java 不支持运算符重载和构造函数隐式调用。如果想在 Java 中实现类似 `explicit` 的效果（限制对象的创建方式），通常使用 **private 构造函数 + 静态工厂方法**：
+
+```cpp
+// C++: explicit 构造函数
+class LegacyConfigFile {
+public:
+    explicit LegacyConfigFile(std::string path);
+};
+// 使用：LegacyConfigFile file("/path/to/config");
+```
+
+```java
+// Java: private 构造 + 静态工厂方法
+public class LegacyConfigFile {
+    private LegacyConfigFile(String path) { ... }  // private，外部不能直接 new
+
+    public static LegacyConfigFile create(String path) {  // 工厂方法
+        return new LegacyConfigFile(path);
+    }
+}
+// 使用：LegacyConfigFile file = LegacyConfigFile.create("/path/to/config");
+```
+
+**关键差异**：
+- C++ 的隐式转换是编译器自动完成的，容易产生意外行为，所以需要 `explicit` 来禁止
+- Java 从语言层面就不支持构造函数隐式调用，不需要 `explicit`
+- Java 的 `private` 构造 + 工厂方法模式可以达到类似效果，但目的是控制对象创建方式，而非禁止隐式转换
+
+### 📌 本节小结
+
+- `explicit` 禁止单参数构造函数的隐式类型转换，防止意外的自动转换
+- Google C++ 代码风格要求几乎所有单参数构造函数都标记为 `explicit`
+- Java 没有隐式类型转换问题，不需要 `explicit`；可用 `private` 构造 + 工厂方法实现类似效果
+
+---
+
+## 4. 默认参数
+
+### 4.1 基本语法
+
+C++ 允许在函数声明中为参数指定**默认值**。调用时如果不传该参数，就使用默认值：
+
+```cpp
+void func(int x = 10);          // x 的默认值为 10
+void func2(int a, int b = 5);   // b 的默认值为 5
+
+func();    // 等价于 func(10)
+func(20);  // x = 20
+
+func2(1);    // 等价于 func2(1, 5)
+func2(1, 2); // a = 1, b = 2
+```
+
+**规则**：
+1. 默认参数必须从**右向左**连续设置，不能跳过
+2. 默认参数只能在**声明**中指定（通常在头文件中），不能在定义中重复指定
+3. 调用时按从左到右的顺序传参，不能跳过中间参数
+
+```cpp
+// ❌ 错误：默认参数必须从右向左连续
+void wrong(int a = 1, int b);       // 编译错误！b 没有默认值，a 不能有
+
+// ✅ 正确：从右向左连续
+void right(int a, int b = 2);       // OK
+void right2(int a = 1, int b = 2);  // OK
+```
+
+### 4.2 真实代码示例
+
+**示例 1：Uuid::FromString 的可选输出参数**
+
+```cpp
+// 来源: system/types/include/bluetooth/types/uuid.h:69
+static Uuid FromString(const std::string& uuid, bool* is_valid = nullptr);
+```
+
+**解读**：
+- 第一个参数 `uuid`：必须传入，要解析的 UUID 字符串
+- 第二个参数 `is_valid`：可选参数，默认为 `nullptr`
+- 如果调用者关心解析是否成功，可以传入一个 `bool` 指针：
+  ```cpp
+  bool valid;
+  Uuid u = Uuid::FromString("180F", &valid);  // 传入 is_valid
+  ```
+- 如果调用者不关心，可以省略：
+  ```cpp
+  Uuid u = Uuid::FromString("180F");  // 不传 is_valid，使用默认值 nullptr
+  ```
+
+**示例 2：EattExtension::Disconnect 的可选 CID**
+
+```cpp
+// 来源: system/stack/eatt/eatt.h:144
+virtual void Disconnect(const RawAddress& bd_addr, uint16_t cid = EATT_ALL_CIDS);
+```
+
+**解读**：
+- 第一个参数 `bd_addr`：必须传入，指定断开连接的设备地址
+- 第二个参数 `cid`：可选参数，默认值为 `EATT_ALL_CIDS`（表示"所有通道"）
+- 如果只想断开特定通道：
+  ```cpp
+  eatt->Disconnect(bd_addr, 0x0040);  // 只断开 CID 为 0x0040 的通道
+  ```
+- 如果想断开该设备的所有 EATT 通道：
+  ```cpp
+  eatt->Disconnect(bd_addr);  // 不传 cid，使用默认值 EATT_ALL_CIDS
+  ```
+
+### 4.3 默认参数 vs 函数重载
+
+默认参数和函数重载可以实现类似的效果：
+
+```cpp
+// 方式一：默认参数（推荐，代码更简洁）
+virtual void Disconnect(const RawAddress& bd_addr, uint16_t cid = EATT_ALL_CIDS);
+
+// 方式二：函数重载（等价但更冗长）
+virtual void Disconnect(const RawAddress& bd_addr, uint16_t cid);
+virtual void Disconnect(const RawAddress& bd_addr) {
+    Disconnect(bd_addr, EATT_ALL_CIDS);
+}
+```
+
+**选择建议**：
+- 如果两个重载函数的逻辑几乎相同，只是某些参数不同 → 用**默认参数**
+- 如果两个重载函数的逻辑差异较大 → 用**函数重载**
+
+### ☕ Java 类比
+
+| 特性 | C++ 默认参数 | Java |
+|------|-----------|------|
+| 语法 | `void func(int x = 10);` | ❌ **Java 不支持默认参数** |
+| 替代方案 | — | **方法重载** |
+
+Java **没有默认参数**语法。Java 程序员通过**方法重载**来模拟：
+
+```cpp
+// C++: 默认参数
+static Uuid FromString(const std::string& uuid, bool* is_valid = nullptr);
+
+// 调用
+Uuid u1 = Uuid::FromString("180F");           // 使用默认参数
+Uuid u2 = Uuid::FromString("180F", &valid);   // 传入 is_valid
+```
+
+```java
+// Java: 方法重载模拟默认参数
+public static Uuid fromString(String uuid) {
+    return fromString(uuid, null);  // 委托给完整版本
+}
+
+public static Uuid fromString(String uuid, boolean[] isValid) {
+    // 完整实现
+}
+
+// 调用
+Uuid u1 = Uuid.fromString("180F");              // 调用简化版
+Uuid u2 = Uuid.fromString("180F", validArr);    // 调用完整版
+```
+
+**关键差异**：
+- C++ 的默认参数只需写**一个函数**，Java 的方法重载需要写**多个函数**
+- C++ 默认参数在头文件声明中指定，调用者可以看到默认值；Java 重载的默认值隐藏在实现中
+- Java 的方法重载更灵活（不同重载可以有完全不同的逻辑），C++ 的默认参数更适合逻辑相同的场景
+
+### 📌 本节小结
+
+- 默认参数 `void func(int x = 10)` 允许调用时省略参数，使用预设的默认值
+- 默认参数必须从右向左连续设置，只能在声明中指定
+- 协议栈中常用于"可选输出参数"（如 `bool* is_valid = nullptr`）和"可选操作范围"（如 `cid = EATT_ALL_CIDS`）
+- Java 不支持默认参数，用方法重载模拟
+
+---
+
+## 5. 析构函数
+
+### 5.1 什么是析构函数？
 
 析构函数是对象**销毁时自动调用**的函数，用于清理资源（释放内存、关闭文件等）。
 
@@ -306,7 +569,7 @@ public EattChannel(RawAddress bda, int cid, int txMtu, int rxMtu) {
 - 每个类只能有**一个**析构函数
 - 对象销毁时**自动执行**
 
-### 3.2 真实示例：EattChannel 的析构函数
+### 5.2 真实示例：EattChannel 的析构函数
 
 > 📄 来源：`system/stack/eatt/eatt.h` 第 75-83 行
 
@@ -333,14 +596,14 @@ public EattChannel(RawAddress bda, int cid, int txMtu, int rxMtu) {
 
 `EattChannel` 在构造时（或后续 `EattChannelSetState` 中）通过 `alarm_new()` 分配了定时器内存。如果对象销毁时不释放这些内存，就会造成**内存泄漏**。析构函数确保了"谁分配，谁释放"。
 
-### 3.3 资源释放时机
+### 5.3 资源释放时机
 
 对象在以下情况会被销毁，析构函数自动调用：
 - 局部对象离开作用域时
 - `delete` 动态分配的对象时
 - 对象作为成员，其所属对象被销毁时
 
-### 3.4 `virtual ~` vs 非 virtual 析构
+### 5.4 `virtual ~` vs 非 virtual 析构
 
 **虚析构函数**（`virtual ~ClassName()`）用于通过基类指针删除派生类对象的场景：
 
@@ -422,26 +685,26 @@ try {
 
 ---
 
-## 4. this 指针
+## 6. this 指针
 
-### 4.1 什么是 this 指针？
+### 6.1 什么是 this 指针？
 
 `this` 是一个隐含的指针，每个非静态成员函数内部都有一个 `this` 指针，指向**调用该函数的那个对象本身**。
 
 你可以把 `this` 理解为"我自己"——对象说"this 就是我"。
 
-### 4.2 this->member 语法
+### 6.2 this->member 语法
 
 ```cpp
 this->成员变量名
 this->成员函数名(参数)
 ```
 
-### 4.3 什么时候必须用 this？
+### 6.3 什么时候必须用 this？
 
 **最常见的情况：参数名与成员变量名冲突时**。
 
-### 4.4 真实示例
+### 6.4 真实示例
 
 > 📄 来源：`system/stack/eatt/eatt.h` 第 102-105 行
 
@@ -519,9 +782,9 @@ public void setTxMTU(int txMtu) {
 
 ---
 
-## 5. const 成员函数
+## 7. const 成员函数
 
-### 5.1 语法
+### 7.1 语法
 
 在成员函数的参数列表后面加上 `const`：
 
@@ -531,13 +794,13 @@ public void setTxMTU(int txMtu) {
 }
 ```
 
-### 5.2 const 成员函数的含义
+### 7.2 const 成员函数的含义
 
 `const` 成员函数承诺：**不会修改任何成员变量的值**。
 
 如果你在 `const` 成员函数里尝试修改成员变量，编译器会报错！
 
-### 5.3 为什么需要 const 成员函数？
+### 7.3 为什么需要 const 成员函数？
 
 当你有一个 `const` 对象时，只能调用 `const` 成员函数：
 
@@ -548,7 +811,7 @@ addr.ToString();   // OK，ToString() 也是 const 函数
 // addr.SomeMutatingFunction();  // 错误！const 对象不能调用非 const 函数
 ```
 
-### 5.4 真实示例一：RawAddress::IsEmpty()
+### 7.4 真实示例一：RawAddress::IsEmpty()
 
 > 📄 来源：`system/types/include/bluetooth/types/address.h` 第 43 行
 
@@ -562,7 +825,7 @@ bool IsEmpty() const { return *this == kEmpty; }
 - 因为只是"查看"而不"修改"，所以标记为 `const`
 - 函数体直接写在类定义内，自动成为内联函数
 
-### 5.5 真实示例二：Uuid 类的 const 成员函数
+### 7.5 真实示例二：Uuid 类的 const 成员函数
 
 > 📄 来源：`system/types/include/bluetooth/types/uuid.h` 第 52-105 行
 
@@ -583,7 +846,7 @@ bool operator!=(const Uuid& rhs) const;         // 不等于比较
 
 **观察规律**：所有"查询/获取"类操作都是 `const` 的，因为它们不修改对象状态。
 
-### 5.6 真实示例三：Controller::Dump()
+### 7.6 真实示例三：Controller::Dump()
 
 > 📄 来源：`system/gd/hci/controller.h` 第 40 行
 
@@ -598,7 +861,7 @@ virtual void Dump(int /*fd*/) const {}
 - `{}` —— 空的默认实现
 - `const` —— 转储调试信息不应该修改对象状态
 
-### 5.7 const 与非 const 对比
+### 7.7 const 与非 const 对比
 
 | 函数类型 | 能否修改成员变量 | const 对象能否调用 |
 |---------|---------------|------------------|
@@ -667,9 +930,9 @@ public final class Uuid implements ReadOnlyUuid {
 
 ---
 
-## 6. static 成员
+## 8. static 成员
 
-### 6.1 static 成员变量
+### 8.1 static 成员变量
 
 `static` 成员变量属于**类本身**，而不是某个具体的对象。所有对象共享同一个 static 变量。
 
@@ -677,7 +940,7 @@ public final class Uuid implements ReadOnlyUuid {
 - 普通成员变量 = 每个人的银行卡余额（每人不同）
 - static 成员变量 = 银行利率（所有人共享同一个值）
 
-### 6.2 static 成员函数
+### 8.2 static 成员函数
 
 `static` 成员函数也属于**类本身**，不需要创建对象就能调用。
 
@@ -685,7 +948,7 @@ public final class Uuid implements ReadOnlyUuid {
 类名::静态函数名(参数);
 ```
 
-### 6.3 真实示例一：Uuid 的 static constexpr 成员
+### 8.3 真实示例一：Uuid 的 static constexpr 成员
 
 > 📄 来源：`system/types/include/bluetooth/types/uuid.h` 第 38-43 行
 
@@ -713,7 +976,7 @@ public:
 size_t bytes = Uuid::kNumBytes128;  // 值为 16
 ```
 
-### 6.4 真实示例二：RawAddress 的 static 成员
+### 8.4 真实示例二：RawAddress 的 static 成员
 
 > 📄 来源：`system/types/include/bluetooth/types/address.h` 第 58-68 行
 
@@ -750,7 +1013,7 @@ if (addr == RawAddress::kEmpty) {
 }
 ```
 
-### 6.5 真实示例三：EattExtension::GetInstance() —— 单例模式
+### 8.5 真实示例三：EattExtension::GetInstance() —— 单例模式
 
 > 📄 来源：`system/stack/eatt/eatt.h` 第 117-120 行
 
@@ -790,7 +1053,7 @@ eatt->Connect(device_address);
 - 类的 `static` 成员变量：属于类，所有对象共享
 - 函数内的 `static` 局部变量：只在第一次执行时初始化，之后保持值不变
 
-### 6.6 static 成员总结
+### 8.6 static 成员总结
 
 | 类型 | 关键字 | 属于 | 访问方式 |
 |------|--------|------|----------|
@@ -844,9 +1107,9 @@ public final class Uuid {
 
 ---
 
-## 7. final 关键字
+## 9. final 关键字
 
-### 7.1 class final —— 禁止继承
+### 9.1 class final —— 禁止继承
 
 在类名后面加 `final`，表示这个类**不能被继承**：
 
@@ -858,13 +1121,13 @@ class 类名 final {
 
 如果有人尝试继承 `final` 类，编译器会报错。
 
-### 7.2 为什么要禁止继承？
+### 9.2 为什么要禁止继承？
 
 - 设计上不希望被扩展（比如值类型、简单数据封装）
 - 避免继承带来的复杂性
 - 编译器可以对 `final` 类做优化（不需要虚函数表）
 
-### 7.3 真实示例一：Uuid final
+### 9.3 真实示例一：Uuid final
 
 > 📄 来源：`system/types/include/bluetooth/types/uuid.h` 第 36 行
 
@@ -874,7 +1137,7 @@ class Uuid final {
 
 **解读**：`Uuid` 是一个表示蓝牙 UUID 的值类型，设计者认为 UUID 的行为是固定的，不需要通过继承来扩展，所以标记为 `final`。
 
-### 7.4 真实示例二：RawAddress final
+### 9.4 真实示例二：RawAddress final
 
 > 📄 来源：`system/types/include/bluetooth/types/address.h` 第 29 行
 
@@ -884,7 +1147,7 @@ class RawAddress final {
 
 **解读**：`RawAddress` 是一个简单的蓝牙地址封装，6 字节数据加上一些工具函数，不需要继承扩展。
 
-### 7.5 final 与 non-final 对比
+### 9.5 final 与 non-final 对比
 
 | 类 | 是否 final | 是否有 virtual 函数 | 设计意图 |
 |----|-----------|-------------------|---------|
@@ -942,13 +1205,13 @@ public class Base {
 
 ---
 
-## 8. 内联函数 inline
+## 10. 内联函数 inline
 
-### 8.1 什么是内联函数？
+### 10.1 什么是内联函数？
 
 内联函数是建议编译器**将函数代码直接嵌入调用处**，而不是进行传统的函数调用（压栈、跳转、返回）。这样可以减少函数调用的开销，适合简短的函数。
 
-### 8.2 定义在类内的函数自动内联
+### 10.2 定义在类内的函数自动内联
 
 如果成员函数的函数体直接写在类定义内部，它就**自动成为内联函数**：
 
@@ -970,7 +1233,7 @@ public:
 
 这些比较函数都很简短（一行代码），适合内联。
 
-### 8.3 显式 inline
+### 10.3 显式 inline
 
 如果函数定义在类外部（比如在头文件中但不在类定义内），需要用 `inline` 关键字：
 
@@ -988,7 +1251,7 @@ inline auto compare_task_by_time = [](const DelayedTask& a, const DelayedTask& b
 - `[...]` —— Lambda 表达式（匿名函数）
 - 这个比较器用于优先队列，会被频繁调用，内联可以提高性能
 
-### 8.4 另一个显式 inline 示例
+### 10.4 另一个显式 inline 示例
 
 > 📄 来源：`system/types/include/bluetooth/types/address.h` 第 83-87 行
 
@@ -1005,7 +1268,7 @@ inline void BDADDR_TO_STREAM(uint8_t*& p, const RawAddress& a) {
 - 这是一个工具函数，将蓝牙地址写入数据流
 - 因为在头文件中定义且不在类内部，必须加 `inline` 避免多重定义错误
 
-### 8.5 inline 使用建议
+### 10.5 inline 使用建议
 
 | 情况 | 建议 |
 |------|------|
@@ -1060,9 +1323,9 @@ public static void bdaddrToStream(byte[] p, RawAddress a) {
 
 ---
 
-## 9. 嵌套类型与内部定义
+## 11. 嵌套类型与内部定义
 
-### 9.1 什么是嵌套类型？
+### 11.1 什么是嵌套类型？
 
 在类内部定义的类型（`using` 别名、`struct`、`enum`、`class` 等），属于该类的作用域。
 
@@ -1071,7 +1334,7 @@ public static void bdaddrToStream(byte[] p, RawAddress a) {
 - 避免全局命名空间污染
 - 体现类型之间的从属关系
 
-### 9.2 真实示例一：Uuid 内部的类型别名
+### 11.2 真实示例一：Uuid 内部的类型别名
 
 > 📄 来源：`system/types/include/bluetooth/types/uuid.h` 第 46 行
 
@@ -1112,7 +1375,7 @@ using UUID128Bit = std::array<uint8_t, 16>;
 
 `using` 的优势：更直观，尤其是定义模板别名时。
 
-### 9.3 真实示例二：Controller 内部的 VendorCapabilities
+### 11.3 真实示例二：Controller 内部的 VendorCapabilities
 
 > 📄 来源：`system/gd/hci/controller.h` 第 194-213 行
 
@@ -1160,7 +1423,7 @@ Controller::VendorCapabilities caps = controller->GetVendorCapabilities();
 uint8_t max_advt = caps.max_advt_instances_;
 ```
 
-### 9.4 真实示例三：EattExtension 内部的 impl 前置声明
+### 11.4 真实示例三：EattExtension 内部的 impl 前置声明
 
 > 📄 来源：`system/stack/eatt/eatt.h` 第 283-285 行
 
@@ -1178,7 +1441,7 @@ private:
 - `std::unique_ptr<impl> pimpl_;` —— 用智能指针管理 impl 对象
 - 这是 **Pimpl 惯用法**（Pointer to Implementation），将实现细节隐藏在 .cpp 文件中
 
-### 9.5 嵌套类型总结
+### 11.5 嵌套类型总结
 
 | 嵌套类型 | 语法 | 示例来源 |
 |---------|------|---------|
@@ -1195,9 +1458,9 @@ private:
 
 ---
 
-## 10. 实际阅读建议
+## 12. 实际阅读建议
 
-### 10.1 如何从头文件快速理解一个类的功能
+### 12.1 如何从头文件快速理解一个类的功能
 
 当你打开一个陌生的头文件，按以下步骤阅读：
 
@@ -1231,7 +1494,7 @@ private:
   UUID128Bit uu;   // 内部就是一个 16 字节数组
 ```
 
-### 10.2 如何从构造函数理解类的初始化需求
+### 12.2 如何从构造函数理解类的初始化需求
 
 构造函数的参数和初始化列表告诉你：创建这个对象**必须提供什么**。
 
@@ -1253,7 +1516,7 @@ EattChannel(RawAddress& bda, uint16_t cid, uint16_t tx_mtu, uint16_t rx_mtu)
 - 状态默认为 `PENDING`（刚创建的通道还在等待连接）
 - 定时器默认为空（只有通道打开后才创建定时器）
 
-### 10.3 如何从 public/private 分组理解接口和实现
+### 12.3 如何从 public/private 分组理解接口和实现
 
 **好的类设计**通常遵循以下模式：
 
@@ -1318,7 +1581,7 @@ private:
 - 想创建 UUID？用 `From16Bit()`、`FromString()` 等工厂函数 → 保证创建的 UUID 是合法的
 - 所有查询函数都是 `const` → UUID 一旦创建就不可变（不可变对象）
 
-### 10.4 阅读顺序总结
+### 12.4 阅读顺序总结
 
 ```
 1. 类名 + final/继承关系 → 这是什么？能被继承吗？
@@ -1366,6 +1629,8 @@ private:
 |------|------|------|----------|
 | `class` | 定义类 | `class EattChannel { ... };` | `class` |
 | 构造函数 | 初始化对象 | `EattChannel(RawAddress& bda, uint16_t cid);` | 同名构造方法 |
+| `explicit` | 禁止隐式类型转换 | `explicit LegacyConfigFile(std::string path);` | `private`构造+工厂方法 |
+| 默认参数 | 参数默认值 | `void Disconnect(const RawAddress&, uint16_t cid = ALL);` | 方法重载 |
 | 析构函数 | 释放资源 | `~EattChannel();` | `finalize()`（已废弃） |
 | `this` | 指向当前对象 | `this->tx_mtu_ = value;` | `this.txMtu = value;` |
 | `const` 成员函数 | 承诺不修改对象 | `bool IsEmpty() const;` | ❌ 无等价 |

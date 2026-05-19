@@ -12,9 +12,10 @@
 3. [const 关键字](#3-const-关键字)
 4. [引用 (Reference)](#4-引用-reference)
 5. [指针 (Pointer)](#5-指针-pointer)
-6. [static 关键字（基础部分）](#6-static-关键字基础部分)
-7. [结构体 struct vs 类 class](#7-结构体-struct-vs-类-class)
-8. [nullptr 与 NULL](#8-nullptr-与-null)
+6. [三目运算符](#6-三目运算符)
+7. [static 关键字（基础部分）](#7-static-关键字基础部分)
+8. [结构体 struct vs 类 class](#8-结构体-struct-vs-类-class)
+9. [nullptr 与 NULL](#9-nullptr-与-null)
 
 ---
 
@@ -771,11 +772,133 @@ if (channel != null) {
 
 ---
 
-## 6. static 关键字（基础部分）
+## 6. 三目运算符
+
+### 6.1 基本语法
+
+三目运算符（也称条件运算符）是 C++ 中唯一的三元运算符，语法简洁，用于在表达式中进行条件选择：
+
+```cpp
+condition ? value_if_true : value_if_false
+```
+
+**执行逻辑**：
+1. 先计算 `condition`
+2. 如果为 `true`，整个表达式的值为 `value_if_true`
+3. 如果为 `false`，整个表达式的值为 `value_if_false`
+
+**等价的 if-else 写法**：
+
+```cpp
+// 三目运算符
+result = condition ? value_if_true : value_if_false;
+
+// 等价的 if-else
+if (condition) {
+    result = value_if_true;
+} else {
+    result = value_if_false;
+}
+```
+
+三目运算符的优势在于：它是一个**表达式**，可以直接用在赋值、函数参数、return 语句等需要值的地方，代码更简洁。
+
+### 6.2 真实代码示例
+
+**示例 1：查找设备时返回指针或 nullptr**
+
+```cpp
+// 来源: system/stack/eatt/eatt_impl.h:90
+return (iter == devices_.end()) ? nullptr : &(*iter);
+```
+
+**解读**：
+- 如果迭代器 `iter` 到达了末尾（没找到设备），返回 `nullptr`
+- 如果找到了，返回该元素的地址 `&(*iter)`
+- 这比写 if-else 更简洁，而且直接用在 return 语句中
+
+**示例 2：选择较小的 MPS 值**
+
+```cpp
+// 来源: system/stack/eatt/eatt_impl.h:166
+.mps = eatt_dev->rx_mps_ < max_mps ? eatt_dev->rx_mps_ : max_mps
+```
+
+**解读**：
+- 比较设备的 `rx_mps_` 和最大允许的 `max_mps`
+- 取两者中较小的值作为实际 MPS
+- 这等价于 `std::min(eatt_dev->rx_mps_, max_mps)`，但三目运算符在某些场景下更直观
+
+**示例 3：根据角色生成显示字符**
+
+```cpp
+// 来源: system/stack/include/pan_api.h:60
+(role & PAN_ROLE_CLIENT) ? 'C' : '.'
+```
+
+**解读**：
+- 检查角色位掩码中是否包含 `PAN_ROLE_CLIENT`
+- 如果是客户端角色，显示字符 `'C'`
+- 如果不是，显示字符 `'.'`（表示无此角色）
+- 常用于日志输出和调试信息格式化
+
+### 6.3 使用建议
+
+| 场景 | 建议 | 原因 |
+|------|------|------|
+| 简单的二选一赋值 | ✅ 推荐用三目运算符 | 代码简洁，一目了然 |
+| return 语句中的条件选择 | ✅ 推荐 | 比if-else更紧凑 |
+| 嵌套三目运算符 | ❌ 不推荐 | 可读性极差，应改用if-else |
+| 有副作用的表达式 | ❌ 不推荐 | 难以理解和调试 |
+
+**嵌套三目运算符的反例**：
+
+```cpp
+// ❌ 不推荐：嵌套三目运算符，可读性差
+result = a > b ? (a > c ? a : c) : (b > c ? b : c);
+
+// ✅ 推荐：用 std::max 或 if-else
+result = std::max({a, b, c});
+```
+
+### ☕ Java 类比
+
+| 特性 | C++ 三目运算符 | Java 三目运算符 |
+|------|-------------|---------------|
+| 语法 | `condition ? a : b` | `condition ? a : b` |
+| 语义 | 完全相同 | 完全相同 |
+| 类型要求 | 第二和第三操作数需可转换为同一类型 | 第二和第三操作数需兼容类型 |
+
+**Java 的三目运算符语法完全相同**：
+
+```cpp
+// C++
+return (iter == devices_.end()) ? nullptr : &(*iter);
+```
+
+```java
+// Java
+return (iter == devices.end()) ? null : iter.next();
+```
+
+**关键差异**：
+- Java 的三目运算符在类型推导上更严格：`true ? 1 : 1.0` 在 Java 中结果为 `double`（自动提升），在 C++ 中也类似
+- C++ 中三目运算符可以返回左值（如 `condition ? a : b = 10;`），Java 不支持
+
+### 📌 本节小结
+
+- 三目运算符 `condition ? a : b` 是简洁的条件选择表达式
+- 适用于简单的二选一场景，如 return 语句、赋值、初始化
+- 不要嵌套使用，复杂逻辑应改用 if-else
+- Java 的三目运算符语法完全相同
+
+---
+
+## 7. static 关键字（基础部分）
 
 `static` 在 C++ 中有多种含义，取决于它用在什么地方。
 
-### 6.1 静态成员变量
+### 7.1 静态成员变量
 
 静态成员变量属于**类本身**，而不是某个对象。所有对象共享同一份静态成员变量。
 
@@ -801,7 +924,7 @@ using UUID128Bit = std::array<uint8_t, kNumBytes128>;
 // kNumBytes128 在这里被用作模板参数，因为它在编译期就已知
 ```
 
-### 6.2 静态成员函数
+### 7.2 静态成员函数
 
 静态成员函数也属于**类本身**，不需要对象就能调用。它没有 `this` 指针，因此不能访问非静态成员。
 
@@ -830,7 +953,7 @@ public:
   static constexpr uint64_t kLeCSEventMask = 0x0007f80000000000;
 ```
 
-### 6.3 单例模式的实现
+### 7.3 单例模式的实现
 
 单例模式（Singleton）确保一个类只有一个实例。在协议栈中，`EattExtension` 就使用了单例模式。
 
@@ -892,7 +1015,7 @@ static void eatt_ind_confirmation_timeout(void* data) {
 - C 回调函数不能是普通成员函数（因为成员函数有隐含的 `this` 指针），但静态成员函数没有 `this`，所以可以作为回调
 - 这是在 C++ 中使用 C 风格回调接口的常见模式
 
-### 6.4 static 在不同位置的含义总结
+### 7.4 static 在不同位置的含义总结
 
 | 位置 | 含义 | 示例 |
 |------|------|------|
@@ -966,7 +1089,7 @@ public static EattExtension getInstance() {
 - C++ 的文件级 `static`（限制符号在当前编译单元可见）在 Java 中不存在，Java 用 `private` 或包访问权限来控制可见性
 - C++ 静态成员函数**没有 `this` 指针**，Java 的静态方法也**没有 `this` 引用**，两者一致
 
-### 6.5 练习思考题
+### 7.5 练习思考题
 
 1. `EattExtension::GetInstance()` 中的 `static EattExtension* instance` 是函数内静态变量。如果两次调用 `GetInstance()`，会创建两个 `EattExtension` 对象吗？
 2. 为什么单例模式要 `= delete` 拷贝构造函数和赋值运算符？
@@ -974,9 +1097,9 @@ public static EattExtension getInstance() {
 
 ---
 
-## 7. 结构体 struct vs 类 class
+## 8. 结构体 struct vs 类 class
 
-### 7.1 默认访问权限的区别
+### 8.1 默认访问权限的区别
 
 在 C++ 中，`struct` 和 `class` 几乎完全相同，唯一的区别是**默认访问权限**：
 
@@ -995,13 +1118,13 @@ class MyClass {
 };
 ```
 
-### 7.2 何时用 struct 何时用 class
+### 8.2 何时用 struct 何时用 class
 
 **约定**（Google C++ 代码风格，也是协议栈代码遵循的风格）：
 - **struct**：用于**被动数据载体**，即主要就是存数据的，没有太多逻辑
 - **class**：用于有**不变量（invariant）需要维护**的类型，有封装和逻辑
 
-### 7.3 真实代码示例
+### 8.3 真实代码示例
 
 **示例 1：struct 作为前置声明（Pimpl 惯用法）**
 
@@ -1204,7 +1327,7 @@ public class EattExtension {
 }
 ```
 
-### 7.4 练习思考题
+### 8.4 练习思考题
 
 1. 如果把 `struct closure_data` 改成 `class closure_data`，代码还能编译吗？需要做什么修改？
 2. `struct impl;` 是前置声明。为什么不在头文件中直接定义 `impl` 的内容？这样做有什么好处？
@@ -1212,9 +1335,9 @@ public class EattExtension {
 
 ---
 
-## 8. nullptr 与 NULL
+## 9. nullptr 与 NULL
 
-### 8.1 NULL 的问题
+### 9.1 NULL 的问题
 
 在 C 语言中，`NULL` 通常定义为 `((void*)0)` 或 `0`。在 C++ 中，`NULL` 通常定义为 `0`。这会导致一个严重的问题：
 
@@ -1225,7 +1348,7 @@ void func(char* p);     // 重载 2
 func(NULL);  // 你想调用重载 2，但 NULL 是 0，所以调用了重载 1！
 ```
 
-### 8.2 nullptr 的优势
+### 9.2 nullptr 的优势
 
 C++11 引入了 `nullptr`，它是专门的空指针字面量，类型是 `std::nullptr_t`：
 
@@ -1238,7 +1361,7 @@ func(nullptr);  // 明确调用重载 2，因为 nullptr 是指针类型
 2. **不会与整数 0 混淆**：在函数重载时不会选错
 3. **语义更清晰**：`nullptr` 一看就知道是空指针，`0` 或 `NULL` 则有歧义
 
-### 8.3 协议栈中的混用情况
+### 9.3 协议栈中的混用情况
 
 在蓝牙协议栈代码中，我们可以看到 `NULL` 和 `nullptr` 的混用，这反映了代码的历史演变：
 
@@ -1304,7 +1427,7 @@ eatt_dev->eatt_tcb_ = NULL;
 - 这在大型项目中很常见：代码是逐步演进的，新旧风格并存
 - **新代码应该统一使用 `nullptr`**
 
-### 8.4 nullptr 在函数参数中的使用
+### 9.4 nullptr 在函数参数中的使用
 
 ```cpp
 // 来源: system/types/include/bluetooth/types/uuid.h:69
@@ -1316,7 +1439,7 @@ static Uuid FromString(const std::string& uuid, bool* is_valid = nullptr);
 - 调用者可以选择不传这个参数，函数内部会检查 `is_valid != nullptr` 来决定是否设置验证结果
 - 这是 C++ 中"可选输出参数"的常见模式
 
-### 8.5 NULL 与 nullptr 的等价性
+### 9.5 NULL 与 nullptr 的等价性
 
 在大多数情况下，`NULL` 和 `nullptr` 可以互换使用：
 
@@ -1375,7 +1498,7 @@ process(null);      // 调用 process(Object)，清晰
 - Java 的 `null` 只能赋给引用类型（对象），不能赋给基本类型（`int`、`boolean` 等），这比 C++ 更严格
 - C++ 需要 `nullptr` 来解决 `NULL` 的历史遗留问题，Java 从一开始就设计正确
 
-### 8.6 练习思考题
+### 9.6 练习思考题
 
 1. 在 `eatt.h` 的 `EattChannel` 构造函数中，`ind_ack_timer_(NULL)` 改成 `ind_ack_timer_(nullptr)` 有什么影响？
 2. 为什么 `eatt_impl.h` 中同一文件会混用 `NULL` 和 `nullptr`？如果你来重构，会怎么统一？
@@ -1395,6 +1518,7 @@ process(null);      // 调用 process(Object)，清晰
 | `constexpr` | 编译期常量/函数 | `kNumBytes128`，`From128BitBE()` |
 | `const T&` 参数 | 避免拷贝 + 不可修改 | `const RawAddress& bd_addr` |
 | 指针 | 可以为空，需要检查 | `alarm_t* ind_ack_timer_` |
+| 三目运算符 | 简洁的条件选择表达式 | `(iter == end()) ? nullptr : &(*iter)` |
 | `nullptr` | C++11 空指针，替代 `NULL` | `eatt_tcb_(nullptr)` |
 | `static` 成员 | 属于类而非对象 | `kNumBytes128`，`GetInstance()` |
 | `struct` vs `class` | 默认访问权限不同 | 数据载体用 `struct`，有逻辑用 `class` |
@@ -1416,6 +1540,7 @@ process(null);      // 调用 process(Object)，清晰
 | `constexpr` | 编译期常量 | `static constexpr size_t kNumBytes128 = 16;` | `static final int`（基本类型） |
 | 引用 `T&` | 变量别名，必须初始化 | `const RawAddress& bd_addr` | 对象自动按引用传递 |
 | 指针 `T*` | 存储内存地址，可为空 | `alarm_t* timer_;` | 引用 + `null` |
+| 三目运算符 `?:` | 简洁的条件选择 | `(x > 0) ? x : 0` | 语法完全相同 |
 | `static` 成员 | 属于类而非对象 | `static Uuid From16Bit(uint16_t);` | `static` 成员 |
 | `struct` / `class` | 定义自定义类型 | `class EattChannel { ... };` | `class`（Java无struct） |
 | `nullptr` | C++11空指针字面量 | `eatt_tcb_(nullptr)` | `null` |
