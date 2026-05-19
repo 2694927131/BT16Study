@@ -24,6 +24,8 @@
 
 ---
 
+> 📎 关联教材：07(Lambda), 10(命名空间), 12(并发)
+
 ## 1. std::array — 固定大小数组
 
 ### 1.1 什么是 std::array
@@ -128,6 +130,13 @@ int len = address.length;  // 6
 ```
 
 > **关键区别**：C++ 的 `std::array` 大小是编译期常量，可以用于模板参数和 `constexpr` 计算。Java 的数组大小运行时确定，无法在编译期约束。
+
+### 📌 本节小结
+
+- `std::array<T, N>`是固定大小数组，零额外开销，大小编译期确定
+- 比C数组更安全：支持赋值、知道自身大小、可与STL算法配合
+- 蓝牙协议栈中用于固定长度的协议数据（MAC地址6字节、UUID 16字节）
+- 需要运行时动态大小请用`std::vector`
 
 ---
 
@@ -276,6 +285,13 @@ devices.add(new EattDevice(bdAddr, defaultMtu, maxMps));  // 堆上创建，添�
 ```
 
 > **关键区别**：C++ `vector` 直接存储对象值，扩容时需要移动/拷贝对象。Java `ArrayList` 存储引用，扩容只复制引用数组。C++ 的 `emplace_back` 可以原地构造避免临时对象，Java 不需要这个优化（对象始终在堆上创建）。
+
+### 📌 本节小结
+
+- `std::vector`是最常用的容器，连续内存、随机访问O(1)、尾部操作O(1)
+- `emplace_back`比`push_back`更高效，原地构造避免临时对象
+- 中间插入/删除是O(n)，频繁头部操作请用`deque`
+- 蓝牙协议栈中用于设备列表、CID列表等动态数量数据
 
 ---
 
@@ -446,6 +462,13 @@ channels.put(lcid, channel);          // 插入或更新
 
 > **关键区别**：C++ `map` 的 `[]` 运算符在键不存在时会自动插入默认值，可能导致意外行为。Java `TreeMap.get()` 不会自动插入，更安全。Java 默认推荐 `HashMap`（无序，O(1)），`TreeMap` 只在需要有序键时使用。
 
+### 📌 本节小结
+
+- `std::map`基于红黑树，键自动排序，查找/插入/删除O(log n)
+- `[]`操作符在键不存在时会自动插入默认值——只查询时应用`find()`
+- 蓝牙协议栈中用于CID→通道映射、设备地址→连接状态映射
+- 不需要键有序时，`unordered_map`性能更好
+
 ---
 
 ## 4. std::unordered_map — 哈希映射
@@ -577,6 +600,13 @@ HashMap<RawAddress, DeviceInfo> deviceMap = new HashMap<>();
 
 > **关键区别**：C++ 需要在 `std` 命名空间中特化 `std::hash`，Java 只需在类中重写 `hashCode()` 和 `equals()`。Java 的方式更自然，因为哈希行为是类自身的责任。C++ 的方式更灵活，可以为第三方类型添加哈希支持。
 
+### 📌 本节小结
+
+- `std::unordered_map`基于哈希表，查找平均O(1)，比`map`的O(log n)更快
+- 自定义类型作键时必须提供`std::hash`特化和`operator==`
+- 键无序存储，遍历顺序不确定
+- 标准类型（int、string等）可直接作键，无需额外工作
+
 ---
 
 ## 5. std::set — 有序集合
@@ -690,6 +720,13 @@ if (doingBgConn.contains(appId)) { /* 存在 */ }
 
 > **关键区别**：Java 默认推荐 `HashSet`（无序，O(1)），`TreeSet` 只在需要有序遍历时使用。C++ 中 `set`（有序）比 `unordered_set`（无序）更常用，因为 `unordered_set` 需要自定义哈希函数。
 
+### 📌 本节小结
+
+- `std::set`自动去重+排序，查找/插入/删除O(log n)
+- 比`vector`更适合"判断元素是否存在"和"去重"场景
+- 蓝牙协议栈中用于应用ID集合（自动去重，快速查找/删除）
+- 不需要有序时考虑`std::unordered_set`
+
 ---
 
 ## 6. std::deque — 双端队列
@@ -800,6 +837,13 @@ ArrayDeque<GattCommand> cmdQueue = new ArrayDeque<>();
 cmdQueue.addLast(newCmd);        // 尾部添加
 cmdQueue.removeFirst();          // 头部删除
 ```
+
+### 📌 本节小结
+
+- `std::deque`双端操作均为O(1)，适合队列场景（头部取、尾部加）
+- `vector`头部插入O(n)，`deque`头部插入O(1)——这是核心区别
+- 蓝牙协议栈中用于GATT命令队列（`push_back`+`pop_front`）
+- 只在尾部操作时`vector`通常更快（缓存更友好）
 
 ---
 
@@ -912,6 +956,13 @@ Queue<Runnable> tasks = new LinkedList<>();
 tasks.offer(task);
 Runnable t = tasks.poll();  // 取出并移除队首
 ```
+
+### 📌 本节小结
+
+- `std::queue`是FIFO容器适配器，故意只暴露`push`/`pop`/`front`/`back`接口
+- 不能遍历，保证FIFO语义，防止意外在中间操作
+- 蓝牙协议栈中用于Handler任务队列（先投递先执行）
+- `pop()`不返回值，需先`front()`获取再`pop()`移除
 
 ---
 
@@ -1050,6 +1101,13 @@ DelayedTask next = pq.poll();
 
 > **关键区别**：C++ 默认大顶堆，Java 默认小顶堆。C++ 需要将比较器类型作为模板参数，Java 只需在构造时传入 `Comparator`。Java 的 `poll()` 返回并移除堆顶元素，C++ 需要先 `top()` 再 `pop()`。
 
+### 📌 本节小结
+
+- `std::priority_queue`默认大顶堆，自定义比较器可实现小顶堆
+- 需要比较器类型作模板参数+比较器实例作构造参数
+- C++默认大顶堆，Java默认小顶堆——跨语言开发时注意
+- 蓝牙协议栈中用于延迟任务队列（按时间排序，最早先执行）
+
 ---
 
 ## 9. std::pair — 值对
@@ -1161,6 +1219,13 @@ String value = entry.getValue();
 record Pair<A, B>(A first, B second) {}
 var p = new Pair<>(42, "hello");
 ```
+
+### 📌 本节小结
+
+- `std::pair<A, B>`将两个值绑定，用`first`和`second`访问
+- `map`的元素类型就是`std::pair<const Key, Value>`
+- C++17结构化绑定`auto [k, v] = p;`让pair解构更优雅
+- 蓝牙协议栈中用于延迟任务（时间+闭包）和map遍历
 
 ---
 
@@ -1297,6 +1362,13 @@ RawAddress a = addr.orElse(RawAddress.EMPTY);
 ```
 
 > **关键区别**：Java 的 `Optional` 有丰富的函数式 API（`map`、`filter`、`ifPresent`），C++ 的 `std::optional` 更轻量。Java 社区不推荐 `Optional` 作为字段类型，C++ 没有这个限制。
+
+### 📌 本节小结
+
+- `std::optional<T>`类型安全地表示"可能没有值"，替代返回特殊值或指针
+- 使用前必须检查`has_value()`，否则`*opt`是未定义行为
+- `value_or(default)`提供安全默认值回退
+- 蓝牙协议栈中用于地址解析、反序列化等可能失败的操作
 
 ---
 
@@ -1442,6 +1514,13 @@ void setVolume(VolumeTarget target, int volume) {
 ```
 
 > **关键区别**：C++ `variant` 是值类型（栈上，零堆分配），Java 的密封类方案需要堆分配。Java 17+ 的密封类 + 模式匹配在语义上最接近 `variant`，编译器会检查所有子类型是否被处理。
+
+### 📌 本节小结
+
+- `std::variant<A, B>`是类型安全联合体，自动跟踪当前类型，比`union`更安全
+- `std::visit`+`if constexpr`是最优雅的访问方式
+- 支持非平凡类型（如`std::string`），C风格`union`不支持
+- 蓝牙协议栈中用于"同一概念不同表示"（设备地址或组ID）
 
 ---
 
@@ -1628,6 +1707,13 @@ this.txMtu = Math.min(Math.max(txMtu, MIN_MTU), MAX_MTU);
 
 > **关键区别**：C++ STL 算法直接操作迭代器（可修改原容器），Java Stream 生成新流（不修改原集合）。C++ 的 `std::sort` 是原地排序，Java 的 `.sorted()` 返回新 Stream。Java Stream 是惰性求值的，只有终端操作才触发计算。
 
+### 📌 本节小结
+
+- `std::find_if`+Lambda是条件查找的标准模式，返回迭代器
+- `std::count_if`+Lambda是条件计数的标准模式
+- `std::sort`+Lambda实现自定义排序，`std::clamp`实现值域夹紧
+- 优先使用STL算法而非手写循环：更简洁、更正确、更高效
+
 ---
 
 ## 13. 容器选择指南
@@ -1710,6 +1796,13 @@ this.txMtu = Math.min(Math.max(txMtu, MIN_MTU), MAX_MTU);
 >
 > 只有当你有明确的理由（需要键值映射、需要有序、需要 FIFO 等）时，才考虑其他容器。
 
+### 📌 本节小结
+
+- 不确定用什么容器时，默认选`std::vector`
+- 固定大小用`array`，键值映射用`map`/`unordered_map`，去重集合用`set`
+- 队列用`queue`，优先队列用`priority_queue`，双端操作用`deque`
+- 蓝牙协议栈中容器选择与协议数据特征紧密对应
+
 ---
 
 ## 总结
@@ -1730,3 +1823,83 @@ STL 容器和算法是 C++ 程序员工具箱中最基础、最重要的工具�
 12. **STL 算法** 用于通用操作（查找、计数、排序、取极值）
 
 掌握这些容器和算法，你就拥有了组织数据的"标准武器库"，能够根据场景选择最合适的工具，写出高效、安全、可维护的代码。
+
+---
+
+## 常见错误
+
+### 1. vector 迭代器失效
+
+```cpp
+std::vector<int> v = {1, 2, 3, 4, 5};
+for (auto it = v.begin(); it != v.end(); ++it) {
+    if (*it == 3) {
+        v.push_back(6);  // ❌ push_back可能导致扩容，it失效！
+    }
+}
+// ✅ 正确做法：先reserve足够空间，或用索引遍历，或记录距离
+```
+
+`vector`扩容时所有迭代器、指针、引用都会失效。在遍历中修改`vector`时需格外小心。
+
+### 2. map 的 [] 副作用
+
+```cpp
+std::map<int, std::shared_ptr<Channel>> channels;
+auto ch = channels[5];  // ❌ 如果5不存在，会插入一个nullptr！
+// ✅ 正确做法：先find
+auto it = channels.find(5);
+if (it != channels.end()) {
+    auto ch = it->second;
+}
+```
+
+`map::[]`在键不存在时会自动插入默认构造的值，这是一个容易被忽视的副作用。只查询时应用`find()`。
+
+### 3. unordered_map 缺少 hash 特化
+
+```cpp
+struct MyKey { int a; int b; };
+std::unordered_map<MyKey, std::string> m;  // ❌ 编译错误！MyKey没有hash特化
+// ✅ 正确做法：提供hash特化
+namespace std {
+template <>
+struct hash<MyKey> {
+    size_t operator()(const MyKey& k) const { return hash<int>()(k.a) ^ hash<int>()(k.b); }
+};
+}
+```
+
+自定义类型作`unordered_map`的键时，必须提供`std::hash`特化和`operator==`，否则编译失败。
+
+### 4. priority_queue 比较器方向反
+
+```cpp
+// 想要小顶堆（最小先出），但写反了
+auto cmp = [](int a, int b) { return a < b; };  // ❌ 这是大顶堆！
+std::priority_queue<int, std::vector<int>, decltype(cmp)> pq(cmp);
+// ✅ 小顶堆：a > b 返回true表示a优先级低
+auto cmp = [](int a, int b) { return a > b; };
+```
+
+`priority_queue`的比较器语义：`cmp(a,b)`返回`true`表示a优先级**低于**b。`a > b`才是小顶堆，`a < b`是大顶堆。
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|---------|
+| `array<T,N>` | 固定大小数组 | `std::array<uint8_t, 6> addr;` | `byte[] addr = new byte[6];` |
+| `vector<T>` | 动态数组 | `std::vector<Device> devs;` | `ArrayList<Device>` |
+| `map<K,V>` | 有序键值映射 | `std::map<uint16_t, Channel*> m;` | `TreeMap<K,V>` |
+| `unordered_map<K,V>` | 哈希键值映射 | `std::unordered_map<Addr, Info> m;` | `HashMap<K,V>` |
+| `set<T>` | 有序去重集合 | `std::set<int> ids;` | `TreeSet<T>` |
+| `deque<T>` | 双端队列 | `std::deque<Cmd> q;` | `ArrayDeque<T>` |
+| `queue<T>` | FIFO队列 | `std::queue<Task> q;` | `Queue<T>` |
+| `priority_queue<T>` | 优先队列 | `std::priority_queue<Task> pq;` | `PriorityQueue<T>` |
+| `pair<A,B>` | 值对 | `std::pair<int, std::string> p;` | `Map.Entry<K,V>` |
+| `optional<T>` | 可选值 | `std::optional<RawAddress> addr;` | `Optional<T>` |
+| `variant<A,B>` | 类型安全联合体 | `std::variant<Addr, int> target;` | 密封类+模式匹配 |
+| `find_if` | 条件查找 | `std::find_if(begin, end, lambda)` | `.stream().filter().findFirst()` |
+| `count_if` | 条件计数 | `std::count_if(begin, end, lambda)` | `.stream().filter().count()` |

@@ -20,6 +20,8 @@
 
 ---
 
+> 📎 关联教材：06(现代C++特性), 09(STL容器), 14(Chromium基础库)
+
 ## 1. 什么是 Lambda 表达式
 
 ### 1.1 从一个实际问题出发
@@ -96,6 +98,13 @@ var iter = devices.stream()
 ```
 
 > **关键区别**：C++ 需要显式声明捕获列表，精确控制每个变量是按值还是按引用捕获。Java 自动捕获，但要求变量是 effectively final（不可修改），更安全但灵活性较低。
+
+### 📌 本节小结
+
+- Lambda是编译器自动生成的匿名函数对象，本质是`operator()`的语法糖
+- Lambda让你在需要函数的地方"就地"写逻辑，无需定义单独的函数或结构体
+- C++ Lambda需要显式声明捕获列表，Java Lambda自动捕获（effectively final）
+- Lambda最常见的用途是与STL算法（如`find_if`、`count_if`）配合使用
 
 ---
 
@@ -242,6 +251,13 @@ Runnable inc2 = () -> counter.incrementAndGet();
 ```
 
 > **关键区别**：C++ 的 `mutable` 允许 Lambda 修改按值捕获的副本（不影响外部）。Java 不允许 Lambda 修改捕获的局部变量，但可以通过捕获可变对象（如数组、`AtomicInteger`）间接实现。
+
+### 📌 本节小结
+
+- Lambda完整语法：`[capture](params) mutable -> return_type { body }`
+- 最简形式`[](){}`，各部分按需添加，返回类型通常可省略
+- `mutable`允许修改按值捕获的副本（不影响外部），按引用捕获则无需`mutable`
+- 多个`return`语句且类型不一致时，必须显式指定返回类型
 
 ---
 
@@ -483,6 +499,13 @@ var iter = devices.stream()
 
 > **关键区别**：C++ 的捕获列表让程序员精确控制每个变量的捕获方式，但增加了出错风险（悬空引用）。Java 的 effectively final 规则更安全，但灵活性较低——无法在 Lambda 内修改局部变量。Java 不需要担心悬空引用，因为 GC 保证了对象的生命周期。
 
+### 📌 本节小结
+
+- `[&var]`按引用捕获指定变量是蓝牙协议栈中最常见的捕获方式
+- `[=]`按值捕获所有变量，`[&]`按引用捕获所有变量，`[var]`按值捕获指定变量
+- Lambda立即使用不存储时用`[&]`安全；Lambda被存储（回调/定时器）时用`[=]`或`[var]`避免悬空
+- `[=]`在C++17及之前会隐式捕获`this`，C++20起需显式`[=, this]`
+
 ---
 
 ## 4. Lambda 与 STL 算法结合
@@ -664,6 +687,13 @@ var sorted = channels.stream()
 
 > **关键区别**：C++ STL 算法直接操作迭代器（可修改原容器），Java Stream 生成新流（不修改原集合）。C++ 的 `find_if` 返回迭代器，Java 的 `filter` 返回新 Stream。Java Stream 是惰性求值的，只有终端操作（`collect`、`count` 等）才触发计算。
 
+### 📌 本节小结
+
+- `std::find_if`+Lambda是蓝牙协议栈中最频繁出现的模式，用于条件查找
+- `std::count_if`+Lambda用于条件计数，比手写循环更简洁
+- STL算法名直接表达意图（find_if=查找、count_if=计数），比for循环更可读
+- 比较函数返回`true`表示第一个参数排在前面
+
 ---
 
 ## 5. Lambda 作为变量存储
@@ -786,6 +816,13 @@ long count = nums.stream().filter(isEven).count();
 
 > **关键区别**：C++ 用 `auto` 存储 Lambda，类型是编译器生成的唯一匿名类，比 `std::function` 更高效（无运行时多态开销）。Java 的 Lambda 必须赋值给函数式接口（如 `Predicate<T>`、`Function<T,R>`），通过接口多态调用。
 
+### 📌 本节小结
+
+- 用`auto`存储Lambda，类型是编译器生成的唯一匿名类，比`std::function`更高效
+- `inline auto`用于头文件中定义全局Lambda，避免多重定义错误
+- `decltype(lambda)`获取Lambda类型，常用作`priority_queue`的模板参数
+- 无捕获Lambda可转为函数指针，有捕获Lambda不能
+
 ---
 
 ## 6. Lambda 作为回调函数
@@ -892,6 +929,13 @@ handler.post(() -> Log.i("Auth complete for " + bdAddr));
 
 > **关键区别**：C++ 的 `base::Bind`/`base::BindOnce` 可以绑定成员函数并延迟传参，Java 用方法引用和 Lambda 更简洁。Java 的回调天然是对象，由 GC 管理生命周期；C++ 需要手动管理回调对象的生命周期（如 `base::Unretained`）。
 
+### 📌 本节小结
+
+- Lambda替代函数指针作为回调，可直接访问上下文变量，更简洁
+- `base::BindOnce`绑定Lambda创建一次性回调，`base::Bind`创建可多次调用的回调
+- 蓝牙协议栈中`find_if`+Lambda谓词是最常见的回调模式
+- C++回调需手动管理生命周期（如`base::Unretained`），Java由GC自动管理
+
 ---
 
 ## 7. 泛型 Lambda (C++14)
@@ -991,6 +1035,13 @@ Function<Collection<?>, Integer> getSize = Collection::size;
 ```
 
 > **关键区别**：C++ 泛型 Lambda 的 `auto` 参数让同一个 Lambda 对象可以接受不同类型，编译器为每种类型生成特化代码。Java Lambda 不支持泛型参数，需要用泛型方法或通配符类型间接实现。
+
+### 📌 本节小结
+
+- 泛型Lambda使用`auto`参数，编译器为每种类型生成特化的`operator()`
+- `[](const auto& el)`比写完整类型更简洁，减少类型拼写错误
+- 同一个泛型Lambda可用于不同类型的容器
+- 本质是模板化的`operator()`，零运行时开销
 
 ---
 
@@ -1122,6 +1173,13 @@ DelayedTask next = pq.poll(); // 取出并移除堆顶
 ```
 
 > **关键区别**：C++ 的 `priority_queue` 需要将比较器类型作为模板参数（用 `decltype` 获取 Lambda 类型），并在构造时传入实例。Java 的 `PriorityQueue` 只需在构造时传入 `Comparator` 对象，更简洁。Java 默认是小顶堆，C++ 默认是大顶堆。
+
+### 📌 本节小结
+
+- `priority_queue`需要比较器类型作为模板参数+比较器实例作为构造参数
+- 用`decltype(lambda)`获取Lambda类型作为模板参数
+- `comp(a,b)`返回`true`表示a优先级低于b；`a.first > b.first`实现小顶堆
+- C++默认大顶堆，Java默认小顶堆
 
 ---
 
@@ -1265,6 +1323,13 @@ auto lambda = [p = std::move(ptr)]() { return p->state_; };
 | `[&vec]()` 在多线程中使用 | 数据竞争 | 改为 `[vec]` 按值捕获 |
 | `priority_queue` 忘记传比较器实例 | 编译错误或运行时错误 | 构造时传入 Lambda 实例 |
 
+### 📌 本节小结
+
+- 悬空引用是Lambda最危险的陷阱：按引用捕获局部变量后Lambda生命周期超过该变量
+- `[=]`隐式捕获`this`可能导致对象销毁后访问，应使用`weak_ptr`或显式`[this]`
+- `mutable`允许修改按值捕获的副本，但修改不影响外部变量
+- C++14初始化捕获`[p = std::move(ptr)]`是移动捕获的唯一方式
+
 ---
 
 ## 附录：蓝牙协议栈 Lambda 使用模式总结
@@ -1318,3 +1383,74 @@ do_async_operation(
 ---
 
 > **学习建议**：Lambda 是现代 C++ 最重要的特性之一。建议从最简单的 `[](){}` 开始，逐步理解捕获列表、STL 算法配合、变量存储等用法。在实际编码中，**先写对，再写简**——用传统 for 循环能写对的代码，再尝试用 Lambda + STL 算法改写，体会 Lambda 的简洁之处。
+
+---
+
+## 常见错误
+
+### 1. 悬空引用——捕获局部变量的引用
+
+```cpp
+std::function<int()> create_counter() {
+    int count = 0;
+    return [&count]() { return ++count; };  // ❌ count在函数返回后销毁！
+}
+auto counter = create_counter();
+counter();  // 未定义行为！访问已销毁的变量
+```
+
+Lambda被存储后，按引用捕获的局部变量可能已销毁。修复：按值捕获`[count]`或使用`shared_ptr`。
+
+### 2. [=] 隐式捕获 this
+
+```cpp
+class Foo {
+    int x_;
+public:
+    void bar() {
+        auto lambda = [=]() { return x_; };  // ⚠️ 实际捕获的是this，不是x_的副本！
+        // 如果this被销毁，x_也不可访问
+    }
+};
+```
+
+`[=]`在C++17及之前会隐式捕获`this`，你以为捕获了成员的副本，实际捕获的是指针。修复：显式`[this]`或C++17的`[*this]`。
+
+### 3. 忘记 mutable
+
+```cpp
+int count = 0;
+auto inc = [count]() { count++; };  // ❌ 编译错误！按值捕获的变量默认只读
+auto inc = [count]() mutable { count++; };  // ✅ 加mutable允许修改副本
+```
+
+按值捕获的变量在Lambda内是只读的（`operator()`默认是`const`），需要`mutable`才能修改副本。
+
+### 4. Lambda 类型不匹配
+
+```cpp
+auto lambda = [x](int n) { return n + x; };  // 有捕获，类型是匿名类
+int (*fp)(int) = lambda;  // ❌ 有捕获的Lambda不能转为函数指针！
+
+auto lambda2 = [](int n) { return n; };  // 无捕获
+int (*fp2)(int) = lambda2;  // ✅ 无捕获Lambda可以转为函数指针
+```
+
+有捕获的Lambda是有状态的对象，无法用函数指针表示。如果需要存储有捕获的Lambda，使用`std::function`或`auto`。
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|---------|
+| `[](){}` | 最简Lambda | `[](){ std::cout << "hi"; }` | `() -> {}` |
+| `[=]` | 按值捕获所有 | `[=](int x) { return x + y; }` | 自动捕获(effectively final) |
+| `[&]` | 按引用捕获所有 | `[&]() { count++; }` | 无等价 |
+| `[var]` | 按值捕获指定 | `[x, y]() { return x + y; }` | 自动捕获 |
+| `[&var]` | 按引用捕获指定 | `[&lcid](const auto& e) { ... }` | 无等价 |
+| `find_if` | 条件查找 | `std::find_if(begin, end, lambda)` | `.stream().filter().findFirst()` |
+| `count_if` | 条件计数 | `std::count_if(begin, end, lambda)` | `.stream().filter().count()` |
+| `auto`存Lambda | 存储Lambda变量 | `auto f = [](int x) { return x; };` | `Function<Integer,R> f = x -> ...;` |
+| 泛型Lambda | auto参数(C++14) | `[](const auto& x) { return x.size(); }` | 泛型方法 |
+| `priority_queue`比较器 | 自定义堆排序 | `decltype(cmp)`作模板参数 | `Comparator<T>`作构造参数 |

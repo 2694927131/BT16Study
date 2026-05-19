@@ -20,6 +20,8 @@
 
 ---
 
+> 📎 关联教材：02(类与对象), 04(模板), 14(Chromium基础库)
+
 ## 1. 继承的基本概念
 
 ### 1.1 什么是继承？
@@ -160,6 +162,12 @@ public class ControllerImpl extends Controller { }  // 唯一方式
 - Java **只有 `public` 继承**，没有 `protected` 和 `private` 继承。C++ 的三种继承方式在 Java 中简化为一种
 - Java 用 `extends` 关键字，语义更清晰；C++ 用 `: public`，更简洁但需要记住继承方式
 - Java 的 `extends` 只能继承一个类（单继承），C++ 可以继承多个类（多继承，第 6 节详解）
+
+### 📌 本节小结
+
+- `class Derived : public Base` 表示继承，`public` 是最常用的继承方式
+- public 继承表达 is-a 关系，has-a 关系应使用组合
+- 基类 private 成员无论哪种继承方式都不可在派生类中直接访问
 
 ---
 
@@ -346,6 +354,12 @@ public class Circle extends Shape {
 - Java 的**所有非 static、非 final、非 private 的方法默认都是虚函数**，自动支持多态。C++ 必须显式加 `virtual` 关键字
 - Java 的设计哲学是"默认安全"——多态是常态，不需要记住加 `virtual`。C++ 的设计哲学是"零开销"——不为不需要多态的函数付出 vtable 开销
 - Java 中要禁止方法被重写，用 `final`；C++ 中要启用多态，用 `virtual`——两者思路相反
+
+### 📌 本节小结
+
+- `virtual` 函数通过基类指针/引用调用时，运行时根据实际对象类型选择函数版本（动态绑定）
+- vtable（虚函数表）和 vptr（虚函数表指针）是实现动态绑定的底层机制
+- 协议栈中几乎所有模块间通信都依赖虚函数多态，实现接口与实现的解耦
 
 ---
 
@@ -624,6 +638,12 @@ public class Handler extends PostableContext {
 - C++ 的 `override` 是**关键字**，Java 的 `@Override` 是**注解**，但功能完全一致
 - 位置不同：C++ 放在函数声明末尾，Java 放在函数声明上方
 - 两者都是**最佳实践**：凡是重写父类方法，都应该加上 `override`/`@Override`
+
+### 📌 本节小结
+
+- `override` 让编译器检查是否正确重写了基类虚函数，防止拼写错误和参数不匹配
+- 所有重写基类虚函数的地方都必须加 `override`，这是编码规范而非可选项
+- C++ 的 `override` 是关键字，Java 的 `@Override` 是注解，功能一致
 
 ---
 
@@ -922,6 +942,12 @@ public abstract class Controller {
 - Java 8+ 的 interface 支持 `default` 方法（有默认实现），这与 C++ 抽象类中的普通虚函数类似
 - C++ 的纯虚函数可以有函数体（`virtual void foo() = 0 { /* 实现 */ }`），但很少用；Java 的 abstract 方法不能有函数体
 
+### 📌 本节小结
+
+- `virtual void foo() = 0` 声明纯虚函数，包含纯虚函数的类是抽象类，不能实例化
+- 派生类必须实现所有纯虚函数才能实例化
+- 协议栈用纯虚类模拟接口（如 `Controller`），实现接口与实现的解耦
+
 ---
 
 ## 5. 虚析构函数
@@ -1071,6 +1097,12 @@ public:
 - Java 有**垃圾回收器**，对象不再被引用时自动回收，程序员不需要手动 `delete`
 - C++ 的虚析构函数解决的是"通过基类指针 `delete` 派生类对象"的问题。Java 中不存在 `delete`，所以这个问题根本不存在
 - Java 中如果需要显式释放资源，使用 `AutoCloseable` + `try-with-resources`，而不是析构函数
+
+### 📌 本节小结
+
+- 基类析构函数必须是 `virtual`，否则通过基类指针 delete 派生类对象会导致内存泄漏
+- 黄金法则：只要类有 virtual 函数，析构函数也应该是 virtual 的
+- `virtual ~Controller() = default;` 是接口类的标准写法
 
 ```cpp
 // C++: 必须用虚析构函数确保正确释放
@@ -1298,6 +1330,12 @@ public class BidiQueueEnd<TEnqueue, TDequeue>
 - C++ 的多继承可以继承有状态的类（有成员变量），Java 的接口不能有实例字段（Java 8+ 只能有 `default` 方法和 `static` 方法）
 - Java 用**接口 + 委托模式**来替代 C++ 的多继承。`BidiQueueEnd` 内部持有 `tx_` 和 `rx_` 指针并转发调用，这种模式在 Java 中同样适用
 
+### 📌 本节小结
+
+- C++ 支持多继承 `class Derived : public Base1, public Base2`
+- 协议栈中多继承主要用于同时实现多个接口（如 `BidiQueueEnd` 继承 `IQueueEnqueue` + `IQueueDequeue`）
+- Java 不支持类多继承，但可以 implements 多个接口
+
 ---
 
 ## 7. 虚继承
@@ -1490,6 +1528,12 @@ class BluetoothDevice implements IScanner, IConnector {
 - C++ 的虚继承是解决多继承副作用的复杂机制，Java 通过限制语言特性（不支持类多继承）来避免这个复杂性
 - 这是 Java 在语言设计上"少即是多"的典型体现
 
+### 📌 本节小结
+
+- 菱形继承导致基类子对象重复，产生成员访问歧义和内存浪费
+- `virtual public` 继承确保共享基类子对象只有一份
+- 协议栈中菱形继承少见，多继承通常是不相关接口的组合
+
 ---
 
 ## 8. 接口设计模式
@@ -1654,6 +1698,12 @@ private:
   3. 替换实现不需要修改 UpperLayer
 ```
 
+### 📌 本节小结
+
+- C++ 接口类 = 全纯虚函数 + virtual 析构函数，通常以 `I` 开头命名
+- `EattExtension` 是特殊案例：有 virtual 方法但非纯虚，本身可实例化（可扩展实体类）
+- 依赖倒置原则：上层依赖接口而非具体实现，实现解耦和可测试
+
 ---
 
 ## 9. 阅读继承关系的技巧
@@ -1787,6 +1837,21 @@ grep -rn ": public.*Controller" --include="*.h"
 | **可扩展实体** | virtual 方法但非纯虚 | `EattExtension` |
 | **Pimpl 隐藏** | `struct impl; unique_ptr<impl>` | `ControllerImpl`, `EattExtension` |
 
+### 📌 本节小结
+
+- 阅读继承关系：先看类声明第一行的 `: public Base`，再追踪基类链
+- 搜索 `override` 关键字可找到虚函数的实现类
+- IDE 的 "Go to Implementation"（Ctrl+F12）是最实用的导航功能
+
+---
+
+## 常见错误
+
+1. **忘记 `override`**：重写基类虚函数时不加 `override`，拼写错误或参数不匹配时编译器不会报错，导致隐藏的 bug
+2. **忘记虚析构函数**：基类有 virtual 函数但析构函数不是 virtual，通过基类指针 delete 派生类对象会导致内存泄漏
+3. **纯虚类未实现所有方法**：继承抽象类但遗漏了某个纯虚函数的实现，导致派生类也无法实例化
+4. **多继承二义性**：两个基类有同名成员，派生类访问时产生歧义，需要用 `Base1::member` 显式指定
+
 ---
 
 ## 总结：核心知识点速查卡
@@ -1851,3 +1916,17 @@ EattExtension (带 virtual 方法的实体类，非纯接口)
 > 2. **模板编程（Template）**：`BidiQueueEnd<TENQUEUE, TDEQUEUE>` 这样的模板类
 > 3. **Pimpl 惯用法**：`ControllerImpl` 和 `EattExtension` 都用了这种模式
 > 4. **回调机制（Callback）**：协议栈中 `Callback<>` 和 `OnceClosure` 的使用
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `: public Base` | public 继承 | `class ControllerImpl : public Controller` | `extends Controller` |
+| `virtual` | 声明虚函数，启用动态绑定 | `virtual void Reset() = 0;` | 方法默认虚 |
+| `override` | 标记重写基类虚函数 | `void Reset() override;` | `@Override` |
+| `= 0` | 纯虚函数，子类必须实现 | `virtual void Post(...) = 0;` | `abstract void post(...);` |
+| `virtual ~` | 虚析构函数 | `virtual ~Controller() = default;` | ❌ 不需要 |
+| 多继承 | 同时继承多个基类 | `class BidiQueueEnd : public IQueueEnqueue, public IQueueDequeue` | `implements A, B` |
+| `virtual public` | 虚继承，解决菱形问题 | `class Scanner : virtual public Device` | ❌ 不需要 |

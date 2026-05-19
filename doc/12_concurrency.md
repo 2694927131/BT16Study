@@ -785,6 +785,13 @@ if (enqueueRegistered.compareAndSet(false, true)) {
 - C++ 支持细粒度的内存序控制（`memory_order_relaxed` 等），Java 默认使用 `volatile` 语义（类似 `memory_order_seq_cst`），Java 9+ 通过 `VarHandle` 支持更细粒度控制
 - Java 的 `AtomicInteger` 提供了 `incrementAndGet()` 等便捷方法，C++ 需要用 `fetch_add()` + 1
 
+### 📌 本节小结
+
+- `std::atomic` 提供无锁的原子操作，适用于单个简单变量（标志、计数器）
+- `exchange()` 原子地读取旧值并设置新值，常用于"只注册一次"的逻辑
+- atomic vs mutex选择：单变量用atomic，复杂数据结构用mutex，多变量一致性用mutex
+- 内存序默认使用`memory_order_seq_cst`，除非有明确性能需求才考虑更低的序
+
 ---
 
 ## 6. std::promise 和 std::future
@@ -988,6 +995,13 @@ try {
 - Java 的 `CompletableFuture` 功能更强大，支持链式调用（`thenApply`、`thenCompose` 等）
 - C++ 的 `future.get()` 只能调用一次，Java 的 `CompletableFuture.get()` 可以多次调用
 - 在 Android 蓝牙 Framework 层，`CompletableFuture` 常用于异步操作的结果回调
+
+### 📌 本节小结
+
+- `std::promise`是值的提供者，`std::future`是值的获取者，构成一次性线程间通信
+- `Handler::Synchronize()`是经典应用：Post一个set_value任务，等待之前所有任务完成
+- `future.wait_for(timeout)`设置超时等待，避免无限阻塞
+- C++将promise/future分为两个对象，Java合并为一个`CompletableFuture`
 
 ---
 
@@ -1608,3 +1622,28 @@ std::atomic
 | `system/gd/hal/hci_hal_impl_android.cc` | mutex, lock_guard | HCI 数据接收 |
 | `system/gd/hci/hci_layer_fake.h` | GUARDED_BY, LOCKS_EXCLUDED | 测试替身 |
 | `system/stack/arbiter/acl_arbiter.h` | GUARDED_BY | ACL 仲裁器 |
+
+## 常见错误
+
+1. **忘记加锁**：访问共享数据时不加锁是最常见的并发错误。即使代码"看起来"只在单线程运行，也可能被Binder线程或定时器回调并发访问。使用`GUARDED_BY`注解让编译器帮助检查。
+
+2. **持锁时间过长**：在锁内执行耗时操作（如I/O、日志、回调通知）会阻塞其他线程，降低并发性能。应使用swap技巧将资源移到锁外释放，将Notify等操作放在锁外执行。
+
+3. **死锁（两个锁顺序不一致）**：线程A先锁mutex1再锁mutex2，线程B先锁mutex2再锁mutex1，可能导致死锁。解决方案：统一加锁顺序，或使用`std::lock()`同时获取多个锁。
+
+4. **atomic误用为复杂操作**：`std::atomic`只能保证单个操作的原子性，无法保护多个变量之间的一致性。如"检查标志→修改数据"这种复合操作，必须用mutex而非atomic。
+
+5. **promise/future无限等待**：`future.get()`会无限阻塞，必须使用`future.wait_for(timeout)`设置合理的超时时间，并在超时时进行错误处理（如协议栈启动超时后Abort）。
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `std::mutex` | 互斥锁 | `std::mutex m;` | `synchronized` / `ReentrantLock` |
+| `std::lock_guard` | RAII自动解锁 | `std::lock_guard<std::mutex> lock(m);` | `synchronized` 块 |
+| `std::recursive_mutex` | 可重入互斥锁 | `std::recursive_mutex rm;` | `ReentrantLock`（默认可重入） |
+| `GUARDED_BY(mutex)` | 数据成员必须持锁访问 | `int data_ GUARDED_BY(mutex_);` | `@GuardedBy("mutex")` |
+| `std::atomic<T>` | 原子变量 | `std::atomic<bool> is_running_{false};` | `AtomicBoolean` |
+| `std::promise/future` | 一次性线程间通信 | `promise.set_value(); future.wait_for(timeout);` | `CompletableFuture` |
+| `std::chrono::milliseconds` | 毫秒时长 | `std::chrono::milliseconds(2000)` | `Duration.ofMillis(2000)` |
+| `Handler::Post` | 投递任务到Handler线程 | `handler->Post(BindOnce(&Cls::method));` | `Handler.post(Runnable)` |

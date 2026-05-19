@@ -4,6 +4,8 @@
 > **前置知识**：本系列教材 01-13 课的 C++ 基础知识
 > **学习目标**：掌握协议栈代码的整体架构、代码风格差异、阅读技巧和调试方法，能够独立追踪和定位代码
 
+> 📎 关联教材：01-14(所有教材), 本篇是综合实战篇
+
 ---
 
 ## 1. 协议栈代码整体架构
@@ -162,6 +164,13 @@ HCI 层 → 控制器硬件
 ```
 
 **关键洞察**：Java 开发者熟悉的 `BluetoothAdapter`、`BluetoothGatt` 等 API，最终都通过 JNI 调用到 C++ 协议栈。理解这个分层架构，就能知道 Java 层的 Bug 可能需要到 C++ 层排查。
+
+### 📌 本节小结
+
+- 协议栈源码在`system/`下，核心模块：gd/(新架构)、stack/(传统栈)、btif/(JNI桥接)、bta/(应用层)
+- GD架构用现代C++17，传统栈用C风格+逐步现代化，两者通过Shim层桥接
+- Shim层是新旧架构的适配器，提供GetController()、GetScanning()等统一访问入口
+- Java Framework通过AIDL→JNI→btif→Shim/GD的路径调用到C++协议栈
 
 ---
 
@@ -383,6 +392,13 @@ public class BtmConfig {
 
 **关键洞察**：Java 开发者在阅读 GD 架构代码时会感到熟悉（面向对象、智能指针、lambda），但阅读传统栈代码时需要适应 C 风格的写法（函数指针、`void*`、全局变量）。
 
+### 📌 本节小结
+
+- GD架构：现代C++17，命名空间、智能指针、constexpr、enum class、RAII
+- 传统栈：C风格，t前缀结构体、函数指针回调、全局变量、#define常量
+- EATT模块是新旧风格混合的典型案例：对外接口现代C++，内部实现混合两种风格
+- 识别关键差异：GD用Callback/BindOnce，传统用函数指针；GD用nullptr，传统用NULL
+
 ---
 
 ## 3. 如何阅读一个头文件
@@ -537,6 +553,13 @@ public class EattExtensionImpl implements EattExtension {
 
 **关键差异**：C++ 的头文件/实现文件分离和 Pimpl 惯用法，在 Java 中通常用接口/实现类分离来替代。Java 开发者阅读 C++ 头文件时，可以将 `.h` 文件类比为 Java 的接口，将 `.cc` 文件类比为 Java 的实现类。
 
+### 📌 本节小结
+
+- 五步阅读法：看类名注释→看public方法→看private成员→看继承关系→看构造析构
+- Pimpl惯用法（`unique_ptr<impl>`）隐藏实现细节，修改内部不需要重编译
+- `= delete`表示禁止拷贝（单例），`virtual ~XXX() = default`表示多态基类
+- EattExtension阅读结论：单例管理类，Pimpl隐藏实现，所有public方法都是虚函数
+
 ---
 
 ## 4. 如何跟踪函数调用链
@@ -663,6 +686,13 @@ static void gattClientConnectNative(JNIEnv* env, jobject obj, ...) {
 ```
 
 **关键洞察**：Java 开发者追踪 Bug 时，可以从 Java API 入手，通过 JNI 桥接追踪到 C++ 层。Android Studio 可以调试 Java 层，C++ 层需要用 GDB/LLDB。
+
+### 📌 本节小结
+
+- Java→C++调用链：Java API→JNI→btif→BTA→Stack/GD→HCI→控制器
+- btif层是Java和C++的桥梁，所有Java调用都经过这里
+- IDE导航（F12/Shift+F12）+ grep搜索是追踪代码的两大工具
+- 跟踪BLE连接：BluetoothGatt.connect()→JNI→btif→BTA→GATT→BTM→Shim→GD→HCI
 
 ---
 
@@ -846,6 +876,13 @@ l2capManager.registerCallback((device, lcids, psm, peerMtu) ->
 
 **关键差异**：C++ 的函数指针无法直接绑定到成员函数，需要通过静态函数 + `GetInstance()` 中转；Java 的接口回调和 Lambda 天然支持实例方法引用，代码更简洁。
 
+### 📌 本节小结
+
+- 传统栈用函数指针+void*回调，GD用base::Callback/BindOnce
+- 理解回调的关键是找到"注册"和"触发"的对应关系
+- 传统回调的静态函数是中间跳板，通过GetInstance()获取实例再调用成员函数
+- GD的BindOnce+WeakPtr/Unretained解决了类型安全和生命周期管理问题
+
 ---
 
 ## 6. 常用搜索模式
@@ -949,6 +986,13 @@ grep -rn "class EattExtension" system/
 ```
 
 **关键差异**：C++ 项目中 grep 是最可靠的搜索方式（IDE 索引可能不完整），Java 项目中 IDE 的导航功能更强大。但在 Android 蓝牙这种跨语言项目中，grep 仍然是追踪 JNI 边界的必备工具。
+
+### 📌 本节小结
+
+- 搜索类定义：`grep "class ClassName"`，搜索函数实现：`grep "ClassName::Method"`
+- 搜索回调注册：`grep "RegisterXxxCallback"`，搜索接口实现：`grep "override"`
+- 搜索模式速查：找类、找函数、找回调、找实现、找枚举、找宏、找全局变量
+- C++项目grep最可靠，Java项目IDE更强，跨语言项目grep是必备
 
 ---
 
@@ -1198,6 +1242,13 @@ class EattExtensionImpl implements EattExtension {
 
 **关键洞察**：设计模式是语言无关的。Java 开发者已经熟悉这些模式，只是 C++ 的实现方式不同（如 Pimpl vs 接口/Impl 分离）。理解了模式，就能快速理解 C++ 代码的意图。
 
+### 📌 本节小结
+
+- 协议栈中10种核心设计模式：单例、Pimpl、接口抽象、观察者、状态机、生产者-消费者、Reactor、桥接/Shim、弱引用、工厂方法
+- 单例用`GetInstance()`+`new`（永不销毁），Pimpl用`unique_ptr<impl>`隐藏实现
+- GD架构广泛使用纯虚接口+Impl实现类分离，文件名带`_impl`/`_fake`标识
+- Reactor模式是GD架构核心：epoll→Handler→从队列取任务执行
+
 ---
 
 ## 8. 调试技巧
@@ -1340,6 +1391,13 @@ continue
 - HCI Snoop 日志和 `dumpsys` 是跨语言通用的调试工具
 - Java 的 GC 消除了 use-after-free 等内存错误，C++ 需要 ASan 检测
 - 跨 JNI 边界的 Bug 需要同时调试 Java 和 C++ 层
+
+### 📌 本节小结
+
+- 日志系统：`log::info/warn/error/assert_that`，使用C++20格式化语法
+- SnoopLogger抓取HCI日志：`adb pull btsnoop_hci.log`→Wireshark分析
+- GDB/LLDB断点调试：附加蓝牙进程，在关键函数设断点
+- dumpsys命令查看协议栈状态：`adb shell dumpsys bluetooth_manager`
 
 ---
 
@@ -1490,6 +1548,13 @@ C++ 协议栈的学习路径与 Java 开发者的知识体系有对应关系：
   → 尝试在 C++ 层添加日志追踪 Bug
 ```
 
+### 📌 本节小结
+
+- 五步学习路径：基础类型→OS抽象(osi)→GD OS抽象(gd/os)→HCI层(gd/hci)→协议实现(stack)
+- 基础类型代码量小、逻辑简单，是最安全的起点
+- 对比学习osi和gd/os，理解新旧架构的差异
+- Java开发者推荐从Java层入手→追踪JNI边界→深入C++协议栈
+
 ---
 
 ## 10. 推荐阅读顺序
@@ -1584,6 +1649,15 @@ C++ 协议栈的学习路径与 Java 开发者的知识体系有对应关系：
 - **`connect_eatt()`**：EATT 连接的完整流程
 - **`eatt_l2cap_connect_ind/cfm`**：L2CAP 回调处理
 
+### 📌 本节小结
+
+- 按难度递增阅读：入门级(1-2天)→基础级(3-5天)→进阶级(1-2周)→高级(2-4周)
+- 入门级关注：RawAddress、Callback类型、回调接口、HAL接口
+- 基础级关注：Reactor、Thread、Handler、Queue、Controller
+- 进阶级关注：EATT完整实现、Shim层、SnoopLogger、ConfigCache
+
+---
+
 ---
 
 ## 附录 A：命名规范速查
@@ -1652,3 +1726,26 @@ C++ 协议栈的学习路径与 Java 开发者的知识体系有对应关系：
 ---
 
 > **下一步建议**：完成本教材后，建议选择一个具体的协议模块（如 EATT 或 GATT），按照第 10 节的阅读顺序，从头到尾阅读其完整代码，将本教材中的技巧付诸实践。
+
+## 常见错误
+
+1. **在传统栈中找GD实现**：传统栈（`system/stack/`）和GD架构（`system/gd/`）是两套独立实现。如果在传统栈代码中搜索GD特有的类名（如`AclManager`），将一无所获。必须先确定功能属于哪个架构，再在对应目录搜索。
+
+2. **忽略Shim层直接追踪**：传统栈的很多函数（如`BTM_CreateLeConnection`）实际通过Shim层转发到GD实现。忽略Shim层会导致追踪中断，以为函数没有实现。遇到`shim::`前缀的调用时，应继续追踪到GD层。
+
+3. **不理解线程模型就调试**：蓝牙协议栈是多线程的，在错误线程调用函数会导致竞态条件。调试前必须理解：当前操作应该在哪个线程执行？回调会在哪个线程触发？使用`IsRunningOnCurrentThread()`检查线程。
+
+4. **只看头文件不看实现**：头文件只声明接口，真正的逻辑在`.cc`文件中。特别是Pimpl惯用法的类，头文件只有`unique_ptr<impl>`，所有实现细节都在`.cc`中。只看头文件会错过关键的业务逻辑。
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| 目录结构 | 理解模块划分 | `gd/(新架构), stack/(传统栈), btif/(JNI桥接)` | 包结构 |
+| GD vs 传统栈 | 识别代码风格 | GD:现代C++17, 传统:C风格 | 无直接对应 |
+| Shim层 | 新旧架构桥接 | `shim::GetController()`, `shim::GetScanning()` | Adapter模式 |
+| JNI桥接 | Java→C++调用 | `btif_gattc_open_impl()` | JNI native方法 |
+| 回调追踪 | 找注册与触发对应关系 | `RegisterCallback↔callbacks_->OnEvent()` | 接口回调 |
+| 设计模式 | 理解代码意图 | 单例/Pimpl/观察者/Reactor | 相同模式 |
+| 调试技巧 | 排查问题 | `log::info`, SnoopLogger, GDB, dumpsys | Logcat/AS调试 |
+| 学习路径 | 从简到难阅读代码 | types→osi→gd/os→hci→stack | 由浅入深 |

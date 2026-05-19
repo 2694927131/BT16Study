@@ -18,6 +18,8 @@
 
 ---
 
+> 📎 关联教材：02(类与对象), 08(移动语义), 14(Chromium基础库)
+
 ## 1. 为什么需要智能指针
 
 ### 1.1 裸指针的内存泄漏风险
@@ -131,6 +133,12 @@ void processDevice() {
 - Java 的 GC 比 C++ 的 `shared_ptr` 引用计数**更强大**：GC 可以处理循环引用（通过可达性分析），而 `shared_ptr` 的循环引用会导致内存泄漏
 - C++ 的 RAII 提供了**确定性的资源释放**（析构函数在确定的时间点调用），Java 的 `finalize()` 不可预测，所以 Java 用 `try-with-resources` 替代
 - C++ 的智能指针是**零开销抽象**（`unique_ptr` 无额外开销），Java 的 GC 有运行时开销（STW 停顿等）
+
+### 📌 本节小结
+
+- 裸指针 + 手动 `delete` 在异常和提前返回时极易导致内存泄漏
+- 智能指针通过 RAII 自动管理生命周期，协议栈因生命周期复杂、异步回调多而大量使用
+- Java 有 GC 自动管理，不需要智能指针；C++ 的 RAII 提供确定性资源释放
 
 ---
 
@@ -498,6 +506,13 @@ cleaner.register(timeout, () -> AlarmT.alarmFree(timeout));  // 注册清理动�
 - C++ 的 `unique_ptr` 明确表达"独占所有权"的设计意图，Java 中没有等价概念——所有引用都是共享的
 - C++ 的自定义删除器模式（如 `unique_alarm_ptr`）在 Java 中用 `Cleaner` 或 `PhantomReference` 替代，但不如 C++ 优雅
 
+### 📌 本节小结
+
+- `unique_ptr` 独占所有权，不可拷贝，只能通过 `std::move()` 转移所有权
+- `make_unique` 是推荐的创建方式，`.get()` 获取裸指针但不转移所有权
+- 自定义删除器 `unique_ptr<T, Deleter>` 用于管理 C 风格资源（如 `alarm_free`）
+- Pimpl 惯用法是 `unique_ptr` 最经典的应用
+
 ---
 
 ## 3. std::shared_ptr（共享所有权）
@@ -710,6 +725,12 @@ EattChannel ch3 = channel;  // 复制引用
 - C++ 的 `shared_ptr` 有**循环引用问题**（两个对象互相持有 `shared_ptr` 导致内存泄漏），Java 的 GC 没有这个问题
 - C++ 的 `shared_ptr` 有**引用计数开销**（原子操作），Java 的引用赋值无额外开销
 - C++ 的 `shared_ptr` 提供了**明确的所有权语义**，Java 的引用不区分"拥有"和"借用"
+
+### 📌 本节小结
+
+- `shared_ptr` 通过引用计数共享所有权，可自由拷贝，最后一个持有者销毁时对象被删除
+- `make_shared` 是推荐的创建方式（单次分配，更高效）
+- `shared_ptr` 有循环引用问题，需配合 `weak_ptr` 打破循环
 
 ---
 
@@ -938,6 +959,12 @@ if (dev != null) {
 - C++ 的 `weak_ptr::lock()` 是**原子操作**（线程安全），Java 的 `WeakReference::get()` 不是原子的
 - Java 还有 `SoftReference`（内存不足时才回收）和 `PhantomReference`（对象 finalize 后通知），C++ 没有这些区分
 - 蓝牙协议栈中使用的 `base::WeakPtr`（Chromium 版本）更接近 Java 的 `WeakReference`——不需要 `shared_ptr`，直接与对象生命周期绑定
+
+### 📌 本节小结
+
+- `weak_ptr` 不增加引用计数，用于打破 `shared_ptr` 循环引用
+- 必须通过 `lock()` 提升为 `shared_ptr` 才能访问对象，`lock()` 是原子操作
+- 协议栈使用 `base::WeakPtrFactory` 防止异步回调访问已销毁对象
 
 ---
 
@@ -1257,6 +1284,12 @@ public class EattExtension {
 - C++ 的 Pimpl 是为了解决**编译模型**的问题（头文件暴露实现），不是面向对象设计的问题
 - Java 程序员永远不需要考虑"修改私有成员会导致其他文件重新编译"的问题
 
+### 📌 本节小结
+
+- Pimpl 用 `struct impl;` 前置声明 + `unique_ptr<impl>` 隐藏实现细节
+- 好处：减少编译依赖、稳定 ABI、隐藏内部依赖
+- 析构函数必须在 `.cc` 文件中定义，禁止拷贝和赋值
+
 ---
 
 ## 6. 智能指针选择指南
@@ -1313,6 +1346,12 @@ public class EattExtension {
 | `tAPPS_CONNECTING::doing_direct_conn` | `map<tAPP_ID, unique_alarm_ptr>` | 独占所有权 + 自定义删除器 |
 | `Queue::queue_` | `queue<unique_ptr<T>>` | 独占所有权，出队转移所有权 |
 | `eatt_impl::weak_factory_` | `WeakPtrFactory` | 弱引用，防止悬空回调 |
+
+### 📌 本节小结
+
+- 独占所有权用 `unique_ptr`，共享所有权用 `shared_ptr`，观察可能被销毁的对象用 `weak_ptr`
+- 不拥有对象就用裸指针或引用，Pimpl 用 `unique_ptr`
+- C 风格资源用 `unique_ptr<T, Deleter>` 自定义删除器
 
 ---
 
@@ -1470,6 +1509,22 @@ auto sp = std::make_shared<EattChannel>(...);
 5. **永远不要 `delete` 智能指针 `.get()` 返回的裸指针**
 6. **Pimpl 析构函数必须在 `.cc` 文件中定义**
 
+### 📌 本节小结
+
+- 永远不要 `delete` 智能指针 `.get()` 返回的裸指针
+- `shared_ptr` 循环引用用 `weak_ptr` 打破
+- 优先用 `make_unique`/`make_shared`，不用 `new`
+- `weak_ptr` 必须通过 `lock()` 使用
+
+---
+
+## 常见错误
+
+1. **`unique_ptr` 不能拷贝**：`auto ptr2 = ptr1;` 编译错误，必须用 `auto ptr2 = std::move(ptr1);` 转移所有权
+2. **`shared_ptr` 循环引用**：两个对象互相持有 `shared_ptr` 导致内存泄漏，应将一方改为 `weak_ptr`
+3. **`get()` 后 `delete`**：`delete ptr.get();` 导致 double free，智能指针自己会 `delete`
+4. **忘记 `move` `unique_ptr`**：函数返回 `unique_ptr` 不需要 `move`（自动移动），但赋值给变量时需要
+
 ---
 
 ## 附录：关键源码文件索引
@@ -1484,3 +1539,16 @@ auto sp = std::make_shared<EattChannel>(...);
 | connection_manager.cc | `system/stack/connection_manager/connection_manager.cc` | 自定义删除器 unique_alarm_ptr |
 | btm_iso_api.h | `system/stack/include/btm_iso_api.h` | IsoManager Pimpl |
 | gatt_int.h | `system/stack/gatt/gatt_int.h` | shared_ptr 用于服务列表 |
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `unique_ptr` | 独占所有权智能指针 | `auto p = std::make_unique<EattChannel>(...);` | ❌ GC 管理 |
+| `shared_ptr` | 共享所有权智能指针 | `auto p = std::make_shared<EattChannel>(...);` | ❌ GC 管理 |
+| `weak_ptr` | 弱引用，不增加引用计数 | `std::weak_ptr<EattChannel> w = shared;` | `WeakReference<T>` |
+| `make_unique` / `make_shared` | 推荐的创建方式 | `std::make_unique<impl>()` | `new Impl()` |
+| Pimpl | 隐藏实现细节 | `struct impl; unique_ptr<impl> pimpl_;` | ❌ 不需要 |
+| 自定义删除器 | 管理 C 风格资源 | `unique_ptr<alarm_t, decltype(&alarm_free)>` | `Cleaner`（Java 9+） |

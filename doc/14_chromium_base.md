@@ -21,6 +21,8 @@
 
 ---
 
+> 📎 关联教材：07(Lambda), 12(并发), 05(智能指针)
+
 ## 1. 为什么蓝牙协议栈使用 Chromium 基础库
 
 ### 1.1 Android 框架的 Chromium 依赖
@@ -102,6 +104,13 @@ void someFunction(CompletionCallback callback) {
 ```
 
 **Java 不需要 Chromium 回调体系的原因**：Java 有垃圾回收器（GC），引用天然安全（不会 use-after-free），且 Java 8+ 的 lambda 和方法引用提供了简洁的回调语法。C++ 需要复杂的回调体系（`Bind` + `WeakPtr` + `Unretained`）来管理生命周期，Java 的 GC 解决了大部分生命周期问题。
+
+### 📌 本节小结
+
+- 蓝牙协议栈使用Chromium基础库是因为Android系统内置了这些经过验证的基础设施
+- 旧式C回调（函数指针+void*）存在类型不安全和生命周期无法管理的问题
+- Chromium的Callback+Bind组合提供了类型安全、生命周期管理的现代回调方案
+- Java有GC和lambda，不需要这套复杂的回调体系
 
 ---
 
@@ -235,6 +244,13 @@ Consumer<Result> onceCallback = result -> {
 ```
 
 **关键差异**：C++ 通过 `OnceCallback` 的 move 语义在类型系统层面强制"只调用一次"；Java 没有此约束，需要开发者手动保证（如用 `AtomicBoolean` 标志）。这是 C++ 值语义带来的独特安全保证。
+
+### 📌 本节小结
+
+- `OnceCallback`只能调用一次，通过move语义转移所有权，防止回调被意外多次调用
+- `RepeatingCallback`可以多次调用，支持拷贝
+- `base::Callback`是`RepeatingCallback`的别名，`OnceClosure`是无参一次性回调
+- 与`std::function`的区别：Callback配合Bind提供WeakPtr/Unretained生命周期管理
 
 ---
 
@@ -393,6 +409,13 @@ handler.postDelayed(() -> {
 - C++ 的 `BindOnce` 将参数绑定和生命周期管理（`WeakPtr`/`Unretained`）集成在一起；Java 的 lambda 只捕获变量，生命周期需额外处理
 - C++ 的 `BindOnce` 产生 `OnceCallback` 类型，Java 的 lambda 产生函数式接口类型
 - Java 的 lambda 语法更简洁，但 C++ 的 `Bind` 提供了更强的类型安全和生命周期保证
+
+### 📌 本节小结
+
+- `BindOnce`产生`OnceCallback`，`Bind`产生`RepeatingCallback`，蓝牙协议栈中绝大多数用BindOnce
+- 绑定成员函数时第一个参数必须是对象指针（WeakPtr或Unretained）
+- 绑定自由函数时直接传函数名和参数，参数在绑定时确定
+- Java用lambda捕获变量实现等价功能，更简洁但缺少生命周期管理
 
 ---
 
@@ -623,6 +646,13 @@ handler.postDelayed(() -> {
 - C++ 的 `WeakPtrFactory` 必须是最后一个成员变量（依赖析构顺序），Java 无此限制（GC 不依赖析构顺序）
 - C++ 的 `WeakPtr` 是线程安全的（可跨线程传递），Java 的 `WeakReference` 也线程安全但使用方式不同
 
+### 📌 本节小结
+
+- WeakPtr解决异步回调的use-after-free问题：对象销毁后回调被安全忽略
+- WeakPtrFactory必须是最后一个成员变量，确保最先析构使弱指针失效
+- BindOnce+WeakPtr集成：弱指针无效时回调自动不执行，Java需手动检查
+- 弱指针可跨线程传递，但失效检查和回调执行应在同一线程
+
 ---
 
 ## 5. common::Unretained
@@ -742,6 +772,13 @@ handler.post(() -> this.handleEvent(eventData));
 ```
 
 **Java 不需要 `Unretained` 的原因**：Java 的 GC 保证了只要对象还有引用（包括 lambda 捕获的引用），就不会被回收。C++ 没有 GC，裸指针可能指向已释放的内存，因此需要 `Unretained` 显式声明"我知道这个指针是安全的"。
+
+### 📌 本节小结
+
+- Unretained是不管理生命周期的裸指针包装器，对象销毁后回调会导致未定义行为
+- 安全使用场景：Handler管理生命周期、全局单例、同步调用（栈上对象）
+- 不确定对象是否存活时必须用WeakPtr，不要用Unretained
+- Java不需要Unretained，GC保证引用天然安全
 
 ---
 
@@ -874,6 +911,13 @@ handler.post(() -> obj.handleEvent(data));
 
 **Java 不需要命名空间别名的原因**：Java 的包（package）机制和 import 语句已经解决了命名和依赖问题。Java 不需要像 C++ 那样通过 `using` 别名来解耦命名空间。
 
+### 📌 本节小结
+
+- `common::BindOnce`和`base::BindOnce`完全相同，GD架构用别名解耦
+- `common::BindOn`是便捷的"绑定成员函数+Unretained"组合
+- `PostableContext::BindOnceOn`创建上下文回调，自动投递到对应Handler
+- Handler的`Call()`投递自由函数，`CallOn()`投递成员函数+Unretained
+
 ---
 
 ## 7. common::OnceClosure
@@ -998,6 +1042,13 @@ handler.postDelayed(() -> doSomethingLater(), 5000);
 
 **关键差异**：C++ 区分 `OnceClosure`（只能执行一次）和 `RepeatingClosure`（可多次执行），Java 的 `Runnable` 不区分。C++ 的 `OnceClosure` 通过 move 语义强制一次性，Java 需要开发者自行保证。
 
+### 📌 本节小结
+
+- OnceClosure是无参无返回值的一次性回调，等价于`OnceCallback<void()>`
+- Handler的任务队列就是`std::queue<OnceClosure>`，Post方法接受OnceClosure
+- closure_data是桥接模式：将现代OnceClosure适配到旧式void*回调接口
+- Java的Runnable不区分一次/重复，C++通过move语义强制一次性
+
 ---
 
 ## 8. do_in_main_thread / do_in_main_thread_delayed
@@ -1103,6 +1154,13 @@ handler.postDelayed(() -> {
 - C++ 的 `do_in_main_thread` 固定投递到蓝牙主线程，Java 的 `Handler` 可以绑定任意 `Looper` 线程
 - C++ 需要 `BindOnce` 打包函数和参数，Java 用 lambda 直接捕获
 - C++ 的 `alarm_set_closure` 使用旧式定时器 API，Java 的 `Handler.postDelayed` 更统一
+
+### 📌 本节小结
+
+- `do_in_main_thread`将任务投递到蓝牙主线程，`do_in_main_thread_delayed`支持延迟
+- 蓝牙协议栈使用单主线程模型，所有协议栈操作必须在主线程执行
+- 与Handler::Post对比：do_in_main_thread固定投递主线程，Handler可绑定任意线程
+- Java中对应`Handler.post()`和`Handler.postDelayed()`
 
 ---
 
@@ -1214,6 +1272,13 @@ handler.postDelayed(() -> {
 - Activity/Fragment 销毁后的回调泄漏 → 使用 `WeakReference` 或 `Lifecycle` 感知组件
 - 非主线程操作 UI → 使用 `Handler.post()` 或 `runOnUiThread()`
 - 长时间持有的回调 → 使用 `WeakReference` 避免内存泄漏
+
+### 📌 本节小结
+
+- 回调安全决策：对象可能被销毁用WeakPtr，不可能用Unretained
+- 一次性操作用BindOnce+OnceCallback，重复操作用Bind+RepeatingCallback
+- 最常见模式：WeakPtr+BindOnce+do_in_main_thread_delayed
+- Java用WeakReference+Lambda+Handler.postDelayed实现等价模式
 
 ---
 
@@ -1353,6 +1418,13 @@ void process_callback(base::OnceClosure task) {
 | 回调参数错误 | 检查 Bind 时的参数类型和数量是否匹配 |
 | 内存泄漏 | 检查 closure_data 等包装结构是否正确释放 |
 
+### 📌 本节小结
+
+- 忘记WeakPtr导致use-after-free是最常见的回调错误，用ASan检测
+- OnceCallback不能调用两次，Debug构建中Chromium会断言检查
+- 在错误线程调用回调会导致竞态条件，用线程检查断言防御
+- WeakPtrFactory必须是最后一个成员变量，否则析构顺序导致悬空回调
+
 ---
 
 ## 附录：关键源文件索引
@@ -1367,3 +1439,25 @@ void process_callback(base::OnceClosure task) {
 | `system/gd/common/bind.h` | common 命名空间的 Bind/BindOnce/Unretained 别名 |
 | `system/gd/common/callback.h` | common 命名空间的 OnceClosure/OnceCallback 别名 |
 | `system/gd/common/postable_context.h` | PostableContext 的 BindOnceOn/BindOn 封装 |
+
+## 常见错误
+
+1. **忘记GetWeakPtr()导致悬空回调**：在`BindOnce`中直接使用`base::Unretained(this)`而非`weak_factory_.GetWeakPtr()`，如果对象在回调执行前被销毁，会导致use-after-free崩溃。异步回调（尤其是延迟回调）必须使用WeakPtr。
+
+2. **OnceCallback调用两次**：`OnceCallback`设计为只能调用一次，调用后必须通过`std::move`转移所有权。重复调用是未定义行为，Debug构建中Chromium会触发断言。确保回调只传递给一个接收者。
+
+3. **Unretained对象被提前销毁**：使用`Unretained`时必须确保对象在回调执行时仍然存活。常见陷阱：延迟回调中使用Unretained，但对象可能在延迟期间被销毁。如果不确定，改用WeakPtr。
+
+4. **WeakPtrFactory不是最后成员**：如果`WeakPtrFactory`不是最后一个成员变量，析构时其他成员先被销毁，但弱指针仍显示"有效"，回调可能访问已析构的成员。必须将`WeakPtrFactory`放在类定义的最后。
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `base::OnceCallback<Sig>` | 一次性回调 | `OnceCallback<void(int)> cb;` | `Consumer<Integer>` |
+| `base::BindOnce(func, args)` | 绑定函数+参数产生OnceCallback | `BindOnce(&Cls::method, weak_ptr, arg)` | `() -> obj.method(arg)` |
+| `base::WeakPtr<T>` | 弱指针，对象销毁后回调不执行 | `weak_factory_.GetWeakPtr()` | `WeakReference<T>` |
+| `WeakPtrFactory<T>` | 弱指针工厂（必须最后成员） | `WeakPtrFactory<Cls> weak_factory_{this};` | 无等价 |
+| `common::Unretained(ptr)` | 裸指针，不管理生命周期 | `BindOnce(&Cls::method, Unretained(this))` | 直接引用`this` |
+| `common::OnceClosure` | 无参一次性回调 | `void Post(OnceClosure closure);` | `Runnable` |
+| `do_in_main_thread(task)` | 投递任务到蓝牙主线程 | `do_in_main_thread(BindOnce(func, args))` | `Handler.post(Runnable)` |

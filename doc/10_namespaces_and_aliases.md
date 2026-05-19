@@ -16,6 +16,8 @@
 
 ---
 
+> 📎 关联教材：01(基础语法), 04(模板), 15(阅读导航)
+
 ## 1. 命名空间 (namespace)
 
 ### 1.1 为什么需要命名空间？
@@ -264,6 +266,13 @@ Controller ctrl;
 
 > **关键区别**：C++ 的命名空间是代码块级别的，可以在任意文件中多次扩展。Java 的包是文件/目录级别的，一个 `.java` 文件只能属于一个包。C++ 的嵌套命名空间用 `::` 分隔，Java 用 `.` 分隔。
 
+### 📌 本节小结
+
+- 命名空间给名称加"姓氏"，解决大型项目中的名称冲突问题
+- 蓝牙协议栈使用`bluetooth::hci`、`bluetooth::os`等多层嵌套命名空间组织代码
+- C++17起`namespace A::B::C`简写更简洁，但需在A中放非B内容时仍用传统嵌套
+- 三种引用方式：完全限定名（最安全）、using声明（引入单个）、using namespace（引入全部）
+
 ---
 
 ## 2. 匿名命名空间
@@ -412,6 +421,13 @@ class InternalHelper { /* 只在当前包可见 */ }
 ```
 
 > **关键区别**：C++ 匿名命名空间的可见范围是**单个编译单元**（.cc 文件），粒度更细。Java 的包私有可见范围是**整个包**，粒度更粗。如果 Java 需要文件级别的封装，只能通过内部类或嵌套类实现。
+
+### 📌 本节小结
+
+- 匿名命名空间将符号限制在当前编译单元(.cc文件)内可见，替代`static`
+- 比`static`更强大：可封装类、模板、类型别名，`static`只能作用于函数和变量
+- 可嵌套在命名命名空间内部，实现模块内部的编译单元级封装
+- 编译器为每个匿名命名空间生成唯一内部名称，其他编译单元无法访问
 
 ---
 
@@ -699,6 +715,13 @@ public:
 };
 ```
 
+### 📌 本节小结
+
+- `using 新名称 = 原类型;`比`typedef`更直观，新名称在前面
+- 模板别名是`using`的杀手级特性，`typedef`无法做到
+- 蓝牙协议栈中大量使用`using`简化回调类型、时间点类型、字节数组类型
+- 类内部的`using`类型别名可作为成员类型，遵循标准库Clock等约定
+
 ---
 
 ## 4. typedef（C 风格类型别名）
@@ -848,6 +871,13 @@ byte bleAddressType;  // 无法起别名
 
 > **关键区别**：C++ 的 `typedef` 是纯编译期别名，零运行时开销。Java 的替代方案（接口、类）会创建新的类型。Java 选择不支持类型别名，是为了保持类型系统的简洁性。
 
+### 📌 本节小结
+
+- `typedef 原类型 新名称;`是C风格类型别名，新名称藏在中间，不直观
+- 函数指针的`typedef`语法特别反直觉，`using`更清晰
+- `typedef`不支持模板别名，这是`using`的杀手级优势
+- 新代码应使用`using`，但阅读旧代码时必须能读懂`typedef`
+
 ---
 
 ## 5. using 声明
@@ -970,6 +1000,13 @@ import static java.util.Collections.sort;  // 静态导入
 ```
 
 > **关键区别**：C++ 的 `using namespace` 比 Java 的通配符 `import` 更危险——C++ 的 `using namespace` 会影响当前编译单元的所有后续代码，且头文件中的 `using namespace` 会"泄漏"给所有包含该头文件的代码。Java 的 `import` 只影响当前文件，不会传播给其他类。C++ 的 `using` 声明可以在命名空间内"重新导出"名称，Java 没有这个功能。
+
+### 📌 本节小结
+
+- `using 命名空间::名称;`只引入一个名称，比`using namespace`更安全
+- 派生类中`using Base::func;`可恢复被隐藏的重载函数
+- `using`声明比`using namespace`更推荐，精确控制引入的名称
+- 蓝牙协议栈中常见`using ::bluetooth::ToResult;`引入特定函数
 
 ---
 
@@ -1152,6 +1189,13 @@ C++ 的头文件组织与 Java 的包/模块系统差异很大：
 
 > **关键区别**：Java 的包系统比 C++ 的命名空间更严格——Java 强制要求包名与目录结构对应，且一个文件只能属于一个包。C++ 的命名空间是纯逻辑分组，与文件/目录无关。Java 不需要头文件保护，因为 Java 编译器自动处理重复声明问题。
 
+### 📌 本节小结
+
+- 头文件中声明必须放在命名空间中，实现文件中用`namespace`包裹定义
+- 头文件中禁止`using namespace`，会污染所有包含该头文件的代码
+- 源文件(.cc)中可适度使用`using namespace`，但尽量缩小范围
+- 命名空间与目录结构保持一致，便于代码导航
+
 ---
 
 ## 总结
@@ -1173,3 +1217,84 @@ C++ 的头文件组织与 Java 的包/模块系统差异很大：
 3. **源文件中可以适度使用 `using namespace`**——减少冗余前缀，提高可读性
 4. **匿名命名空间替代 `static`**——更符合 C++ 风格，功能更强大
 5. **命名空间与目录结构保持一致**——便于代码导航和维护
+
+---
+
+## 常见错误
+
+### 1. using namespace 污染全局命名空间
+
+```cpp
+// ❌ 在.cc文件顶部
+using namespace std;
+using namespace bluetooth::hci;
+// 之后所有名称冲突风险大增，如distance()、find()等
+// ✅ 正确做法：使用完全限定名或using声明
+using bluetooth::hci::Channel;  // 只引入需要的名称
+```
+
+`using namespace`将整个命名空间的名称引入当前作用域，极易造成名称冲突。尤其在大型项目中，不同命名空间可能有同名符号。
+
+### 2. 头文件中使用 using namespace
+
+```cpp
+// ❌ header.h
+#pragma once
+using namespace std;  // 这会污染所有包含此头文件的代码！
+namespace bluetooth {
+class Foo { /* ... */ };
+}
+// ✅ 正确做法：头文件中始终使用完全限定名
+namespace bluetooth {
+class Foo {
+    std::string name_;  // 写全std::string
+};
+}
+```
+
+头文件中的`using namespace`会"泄漏"给所有包含该头文件的源文件，这是最危险的命名空间错误。源文件中可以适度使用，但头文件中绝对禁止。
+
+### 3. 匿名命名空间中定义外部需要的符号
+
+```cpp
+// ❌ 在.h文件中使用匿名命名空间
+#pragma once
+namespace {
+    class Helper { /* ... */ };  // 每个包含此头文件的.cc都有独立的Helper类！
+}
+// ✅ 正确做法：使用命名命名空间
+namespace bluetooth {
+namespace internal {
+    class Helper { /* ... */ };  // 所有编译单元共享同一个Helper
+}
+}
+```
+
+匿名命名空间中的符号在每个编译单元中都是独立的副本。如果在头文件中使用，会导致每个包含该头文件的.cc文件各有一份独立副本，可能造成链接错误或行为不一致。
+
+### 4. typedef 和 using 混用
+
+```cpp
+// ❌ 同一项目中混用两种风格
+typedef std::shared_ptr<Channel> ChannelPtr;  // 旧风格
+using HandlerPtr = std::shared_ptr<Handler>;  // 新风格
+// ✅ 统一使用using
+using ChannelPtr = std::shared_ptr<Channel>;
+using HandlerPtr = std::shared_ptr<Handler>;
+```
+
+同一项目中混用`typedef`和`using`会让代码风格不一致，增加阅读负担。新代码应统一使用`using`，更直观且支持模板别名。
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|---------|
+| `namespace` | 避免名称冲突 | `namespace bluetooth { }` | `package bluetooth;` |
+| 嵌套命名空间 | 层级组织 | `namespace bluetooth::hci { }` | `package bluetooth.hci;` |
+| 匿名命名空间 | 编译单元内可见 | `namespace { void helper(); }` | `private`类成员 |
+| `using`别名 | 类型别名 | `using Callback = base::OnceClosure;` | `type Callback = base.OnceClosure;` |
+| `typedef` | C风格类型别名 | `typedef base::OnceClosure Callback;` | 无等价 |
+| `using`声明 | 引入单个名称 | `using bluetooth::hci::Channel;` | `import bluetooth.hci.Channel;` |
+| `using namespace` | 引入整个命名空间 | `using namespace std;` | `import java.util.*;` |

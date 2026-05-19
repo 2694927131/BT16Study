@@ -16,6 +16,8 @@
 
 ---
 
+> 📎 关联教材：02(类与对象), 09(STL容器), 06(现代C++特性)
+
 ## 1. 运算符重载基础
 
 ### 1.1 什么是运算符重载
@@ -119,6 +121,13 @@ if (addr1.equals(addr2)) { ... }
 ```
 
 Java 的 `Comparable<T>` 接口等价于 C++ 的 `operator<`，`equals()` 方法等价于 `operator==`。但 Java 无法让 `==` 运算符本身调用 `equals()`——`==` 在 Java 中比较的是引用（地址），而非内容。
+
+### 📌 本节小结
+
+- 运算符重载本质是函数调用的语法糖，`a < b` 等价于调用 `operator<`
+- `=`、`()`、`[]`、`->` 必须用成员函数重载；`<<`、`>>` 必须用非成员函数重载
+- 比较运算符推荐非成员函数方式，支持双向隐式类型转换
+- Java 不支持运算符重载，用 `Comparable<T>` 和 `equals()` 替代
 
 ---
 
@@ -246,6 +255,13 @@ public class RawAddress implements Comparable<RawAddress> {
 
 **关键差异**：C++ 的 `operator<` 使类型可直接用于 `std::map`；Java 的 `Comparable<T>` 使类型可用于 `TreeMap`。C++ 需要手动实现六个运算符（或用 C++20 `<=>`），Java 只需一个 `compareTo` 方法即可推导出全部比较关系。
 
+### 📌 本节小结
+
+- 六个比较运算符只需手动实现 `operator<` 和 `operator==`，其余可逻辑推导
+- `RawAddress` 采用委托模式，将比较委托给 `std::array`；推导模式保证一致性
+- C++20 太空船运算符 `<=>` 可自动生成全部六个比较运算符
+- 比较运算符必须加 `const` 修饰，否则无法用于 `std::map` 等场景
+
 ---
 
 ## 3. 流插入运算符重载 operator<<
@@ -340,6 +356,13 @@ Log.i(TAG, "Service UUID: " + uuid);           // 同上
 ```
 
 **Java 的优势**：`toString()` 是 `Object` 的方法，所有类都有。`System.out.println()` 和字符串拼接 `+` 都会自动调用它，无需额外定义非成员函数。C++ 之所以需要 `operator<<`，是因为 C++ 的 I/O 系统基于流（stream），而非字符串拼接。
+
+### 📌 本节小结
+
+- `operator<<` 必须是非成员函数，因为左操作数是 `std::ostream` 而非自定义类
+- 标准模式：返回 `std::ostream&` 支持链式调用，声明为 `inline` 避免 ODR 违规
+- 通常委托给 `ToString()` 公有方法，无需 `friend` 即可访问
+- 返回类型必须是 `std::ostream&`，不能返回 `void`，否则 `cout << a << b` 会编译失败
 
 ---
 
@@ -503,6 +526,13 @@ HashMap<RawAddress, DeviceInfo> devices = new HashMap<>();  // 自动使用 hash
 - Java 的 `hashCode()` 和 `equals()` 都是对象自身的方法，IDE 会提醒必须一起重写
 - Java 的 `hashCode()` 返回 `int`（32位），C++ 的 `std::hash` 返回 `size_t`（通常64位）
 
+### 📌 本节小结
+
+- `std::hash` 特化使自定义类型可用作 `std::unordered_map` 的 key
+- 特化必须在 `std` 命名空间中，`operator()` 必须是 `const` 成员函数
+- `operator==` 必须与 `std::hash` 一致：`a == b` 为真时 `hash(a) == hash(b)` 必须为真
+- 常用委托策略：字节→整数→hash（小数据）或字节→string→hash（大数据）
+
 ---
 
 ## 5. std::formatter 特化 (C++20)
@@ -628,6 +658,13 @@ System.out.println(String.format("Address: %20s", address));   // 右对齐，�
 ```
 
 **Java 不需要 `formatter` 特化的原因**：Java 的 `String.format()` 通过 `%s` 调用对象的 `toString()`，而 `toString()` 是 `Object` 的方法，天然可重写。C++ 之所以需要 `std::formatter` 特化，是因为 `std::format` 不知道如何格式化自定义类型，必须显式告诉它。
+
+### 📌 本节小结
+
+- C++20 `std::formatter` 特化让自定义类型支持 `std::format` 格式化输出
+- 继承 `ostream_formatter` 可零成本复用已有 `operator<<`，只需一行声明
+- 继承 `formatter<string>` + 重写 `format` 可完全自定义输出（如 RawAddress 的脱敏输出）
+- RawAddress 的 formatter 使用 `ToRedactedStringForLogging()` 自动脱敏，是重要的安全实践
 
 ---
 
@@ -829,6 +866,13 @@ public class Handler {
 
 **Java 不需要 friend 的原因**：Java 的包（package）机制提供了一种更粗粒度的访问控制——同包内的类可以访问彼此的 package-private 成员。对于更精细的控制，Java 使用内部类。C++ 没有"包"的概念，因此需要 `friend` 来实现类似功能。
 
+### 📌 本节小结
+
+- `friend` 允许特定函数或类访问私有成员，是单向的、不可传递的
+- `friend class` 让整个类的成员函数都能访问私有成员；`friend` 模板类需用 `template` 声明
+- 协议栈中常见模式：Handler↔Queue/Alarm（紧密协作）、MutationEntry↔ConfigCache（受限创建）
+- 应遵循最小权限原则，优先通过公有接口完成，避免过度使用 friend
+
 ---
 
 ## 7. 赋值运算符重载
@@ -1018,6 +1062,13 @@ public class EattExtension {
 2. Java 有垃圾回收器（GC），不需要手动管理资源释放，因此不需要移动语义
 3. Java 没有值语义的概念——所有对象都是引用类型，赋值只是复制引用
 
+### 📌 本节小结
+
+- 拷贝赋值 `operator=` 需处理自赋值检查，返回 `*this` 支持链式赋值
+- `= delete` 禁止拷贝赋值，用于单例和资源独占类（如 EattExtension、Handler）
+- `= default` 显式使用编译器默认实现，表达"使用默认行为"的设计意图
+- Rule of Zero：如果类不需要自定义资源管理，就不声明任何特殊成员函数
+
 ---
 
 ## 总结
@@ -1034,3 +1085,27 @@ public class EattExtension {
 | `operator= = delete` | 禁止拷贝，保护资源独占语义 | `EattExtension`、`Handler` |
 
 这些机制不是孤立的——它们共同构成了 C++ 类型设计的基石。一个设计良好的自定义类型应该像内置类型一样自然地参与比较、哈希、格式化输出等操作，同时通过适当的访问控制保护内部实现细节。
+
+## 常见错误
+
+1. **忘记 const 修饰比较运算符**：`bool operator<(const T& rhs)` 缺少 `const` 会导致无法在 `std::map` 等场景中使用，因为 `std::map` 通过 const 引用调用比较运算符。
+
+2. **hash 特化和 operator== 不一致**：如果 `a == b` 为真但 `hash(a) != hash(b)`，`std::unordered_map` 将无法找到已插入的元素。必须确保相等的对象产生相同的哈希值。
+
+3. **operator<< 返回类型错误**：写成 `void operator<<(ostream& os, const T& obj)` 会导致 `cout << a << b` 编译失败，因为 `cout << a` 返回 `void` 后无法再 `<< b`。必须返回 `std::ostream&`。
+
+4. **friend 声明位置不当**：`friend` 声明可以放在类的任何位置（public/private/protected 均可），但应集中放在类定义的开头或末尾，并添加注释说明为什么需要友元关系，避免代码阅读者困惑。
+
+5. **成员函数方式重载 operator<<**：写成 `ostream& operator<<(ostream& os)` 作为成员函数，调用方式变成 `obj << cout`（反直觉），正确做法是非成员函数 `ostream& operator<<(ostream& os, const T& obj)`。
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `operator==` | 相等比较 | `bool operator==(const T& rhs) const` | `equals()` |
+| `operator<` | 小于比较，用于 `std::map` | `bool operator<(const T& rhs) const` | `Comparable.compareTo() < 0` |
+| `operator<<` | 流插入输出 | `ostream& operator<<(ostream& os, const T& obj)` | `toString()` |
+| `std::hash<T>` 特化 | 哈希函数，用于 `unordered_map` | `struct hash<T> { size_t operator()(const T&) const; };` | `hashCode()` |
+| `std::formatter<T>` 特化 | C++20 格式化输出 | `struct formatter<T> : ostream_formatter {};` | `String.format()` |
+| `friend class X` | 允许 X 访问私有成员 | `friend class Queue;` | 包级访问/内部类 |
+| `operator=(const T&) = delete` | 禁止拷贝赋值 | `EattExtension& operator=(const EattExtension&) = delete;` | 无需（引用赋值天然安全） |

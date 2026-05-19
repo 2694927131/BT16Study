@@ -19,6 +19,8 @@
 
 ---
 
+> 📎 关联教材：06(现代C++特性), 13(类型特征), 09(STL容器)
+
 ## 1. 函数模板基础
 
 ### 1.1 为什么需要函数模板？
@@ -200,6 +202,12 @@ max(3.14, 2.72);     // T = Double（自动装箱）
 - C++ 模板是**代码生成**：编译器为每种使用的类型生成一份独立的函数代码。Java 泛型是**类型擦除**：编译后所有类型参数变为 `Object`，运行时只有一份代码
 - C++ 模板支持**基本类型**（`int`、`double`），Java 泛型不支持（必须用 `Integer`、`Double` 包装类）
 - C++ 模板的错误信息通常很长（因为涉及模板实例化），Java 泛型的错误信息更友好
+
+### 📌 本节小结
+
+- `template <typename T>` 声明类型参数，编译器根据调用参数自动推导 T
+- C++ 模板是代码生成（每种类型独立代码），Java 泛型是类型擦除（运行时一份代码）
+- 模板支持基本类型，Java 泛型不支持（必须用包装类）
 
 ---
 
@@ -416,6 +424,12 @@ public class BidiQueue<TUp, TDown> {
 - C++ 模板参数可以是**任意类型**（包括基本类型 `int`），Java 泛型参数只能是**引用类型**（`Integer` 而非 `int`）
 - Java 的类型擦除意味着运行时无法 `new T()` 或 `instanceof T`，C++ 模板没有这些限制
 
+### 📌 本节小结
+
+- 类模板 `template <typename T> class Name` 使用时必须显式指定类型参数
+- 模板参数可用在成员变量、成员函数、嵌套类型、基类等任何地方
+- C++ 类模板为每种类型生成独立类，Java 泛型运行时只有一份字节码
+
 ---
 
 ## 3. 模板的变长参数包 (Variadic Templates)
@@ -601,6 +615,12 @@ callAll("a", "b", "c");  // T = String
 - C++ 的变长参数包**每个参数可以是不同类型**，Java 的可变参数 `T...` 所有参数必须是同一类型
 - C++ 参数包在**编译期展开**，零运行时开销；Java 的可变参数在运行时就是数组
 - C++ 的 `Args&&...` 配合 `std::forward` 实现完美转发，Java 没有等价机制
+
+### 📌 本节小结
+
+- `typename... Args` 声明变长类型参数包，`Args&&... args` 声明函数参数包
+- 参数包通过递归或折叠表达式展开，`sizeof...(Args)` 获取参数数量
+- `std::forward<Args>(args)...` 展开参数包并完美转发每个参数
 
 ---
 
@@ -931,6 +951,12 @@ public static MutationEntry set(PropertyType type, String section, String proper
 - SFINAE 可以根据任意类型特征（`is_integral`、`is_base_of` 等）选择实现，Java 的方法重载只能根据参数的静态类型选择
 - Java 无法在编译期判断泛型参数是否为枚举、是否继承某个类等，这些在 C++ 中通过 `<type_traits>` 轻松实现
 
+### 📌 本节小结
+
+- SFINAE 让模板替换失败时不报错，而是跳过该候选，实现编译期类型分发
+- `std::enable_if<condition, T>::type` 是 SFINAE 最常用的工具
+- `MutationEntry::Set` 的 6 个重载是 SFINAE 的经典实战案例
+
 ---
 
 ## 5. CRTP (奇异递归模板模式)
@@ -1155,6 +1181,12 @@ public class DeviceConfig extends Serializable<DeviceConfig> {
 - CRTP 是 C++ 独有的**编译期多态**技术，Java 没有等价机制
 - Java 通过 JIT 的去虚化优化来达到类似效果，但这是运行时优化，不如 CRTP 的编译期保证
 - CRTP 让基类可以调用派生类的**静态方法**，Java 的虚方法无法做到这一点
+
+### 📌 本节小结
+
+- CRTP：`class Derived : public Base<Derived>`，派生类把自己作为模板参数传给基类
+- CRTP 实现编译期多态（零开销），虚函数实现运行时多态
+- `Serializable<T>` 用 CRTP 让基类调用子类的静态方法 `T::FromString()`
 
 ---
 
@@ -1392,6 +1424,12 @@ Map<Uuid, Device> deviceMap = new HashMap<>();  // 自动使用 Uuid.hashCode()
 - Java 的 `hashCode()` 模式更简洁：每个类自己实现 `hashCode()`，`HashMap` 不需要知道具体类型。C++ 需要 `std::hash` 特化是因为 `std::unordered_map` 依赖 `std::hash` 模板
 - C++ 的偏特化可以对类型模式进行匹配（如"两个类型相同的 Pair"），Java 完全无法做到
 
+### 📌 本节小结
+
+- 全特化 `template <>` 为特定类型提供专门实现，偏特化为某一类类型提供实现
+- `std::hash<Uuid>` 和 `std::hash<RawAddress>` 是全特化的典型应用
+- `is_specialization_of` 用偏特化实现"判断类型是否为某模板的特化"
+
 ---
 
 ## 7. 模板在实际开发中的应用场景
@@ -1487,6 +1525,12 @@ std::unordered_map<RawAddress, Connection> connection_map;
 // 特化 std::formatter，让自定义类型支持 std::format
 std::cout << std::format("UUID: {}", uuid);
 ```
+
+### 📌 本节小结
+
+- 模板五大应用：容器通用化、类型安全回调、编译期类型检查、零开销抽象、标准库扩展
+- 模板回调比 C 风格函数指针更安全，支持任意可调用对象
+- SFINAE + enable_if 实现编译期类型检查，CRTP 实现零开销抽象
 
 ---
 
@@ -1593,6 +1637,21 @@ class BadConfig : public Serializable<BadConfig> {
 2. **使用 `static_assert`**：在模板中插入 `static_assert` 来验证类型特征
 3. **简化模板**：如果编译错误难以理解，尝试用具体类型替换模板参数，逐步定位问题
 
+### 📌 本节小结
+
+- 阅读模板代码：先把 T 替换成具体类型理解逻辑，再从实例化点反推 T 的含义
+- 遇到 `...` 参数包时，想象展开后的样子
+- 模板错误信息虽长，但关键信息在最后几行
+
+---
+
+## 常见错误
+
+1. **模板定义放在 cpp 文件**：模板定义必须在头文件中，否则其他编译单元无法实例化，导致链接错误
+2. **`enable_if` 条件写错**：条件重叠导致多个重载同时匹配（如 `bool` 同时满足 `is_integral` 和 `is_same<T, bool>`），需确保条件互斥
+3. **忘记 `typename` 关键字**：在模板中引用依赖模板参数的类型时必须加 `typename`，如 `typename T::iterator`，否则编译器不知道它是类型
+4. **模板递归无限展开**：递归模板缺少终止条件，导致编译器栈溢出，需确保有非模板的重载或特化作为递归终点
+
 ---
 
 ## 附录：关键概念速查表
@@ -1616,3 +1675,16 @@ class BadConfig : public Serializable<BadConfig> {
 ---
 
 > **总结**：模板是 C++ 最强大的特性之一，它让代码既泛型又类型安全。蓝牙协议栈中的 `Handler::Call`、`BidiQueue`、`MutationEntry::Set`、`Serializable<T>`、`std::hash` 特化等，都是模板在实际项目中的典型应用。掌握模板，你就能写出更灵活、更安全、更高效的 C++ 代码。
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `template<typename T>` | 函数/类模板声明 | `template<typename T> T Max(T a, T b);` | `<T> T max(T a, T b)` |
+| 类模板 | 泛型类 | `template<typename T> class Stack { };` | `class Stack<T> { }` |
+| 变长参数 `...` | 任意数量/类型参数 | `template<typename... Args> void Call(Args&&... args);` | `T... args`（同类型） |
+| SFINAE / `enable_if` | 编译期条件启用模板 | `typename enable_if<is_integral_v<T>, int>::type = 0` | ❌ 无等价 |
+| CRTP | 编译期多态 | `class Derived : public Base<Derived> { };` | ❌ 无等价 |
+| 模板特化 | 为特定类型提供专门实现 | `template<> struct hash<Uuid> { };` | ❌ 无等价 |

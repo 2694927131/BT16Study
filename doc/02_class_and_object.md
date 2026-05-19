@@ -21,6 +21,8 @@
 
 ---
 
+> 📎 关联教材：01(基础语法), 03(继承与多态), 05(智能指针)
+
 ## 1. 类的定义与基本结构
 
 ### 1.1 什么是类？
@@ -101,6 +103,12 @@ public:
 8. `~EattChannel()` —— 析构函数（第 3 节详解）
 
 **设计思路**：这个类把一个 EATT 通道的所有相关信息（地址、ID、MTU、定时器、命令队列）打包在一起，形成一个完整的"通道"概念。
+
+### 📌 本节小结
+
+- `class` 定义自定义类型，`public`/`private`/`protected` 控制访问权限
+- 成员变量描述属性，成员函数描述行为
+- 类定义末尾的分号 `;` 不能遗漏
 
 ---
 
@@ -278,6 +286,12 @@ public EattChannel(RawAddress bda, int cid, int txMtu, int rxMtu) {
 - Java 中如果没写任何构造函数，编译器自动生成默认构造函数；如果写了带参构造函数，默认构造函数**不会**自动生成——这与 C++ 行为一致
 - C++ 的 `= default` 和 `= delete` 在 Java 中没有等价语法。Java 不支持拷贝构造函数（对象赋值是引用赋值），也不需要显式删除
 
+### 📌 本节小结
+
+- 构造函数与类同名、无返回值，创建对象时自动调用
+- 成员初始化列表 `: member_(value)` 比函数体内赋值更高效，const/引用成员必须用
+- `= default` 显式要求编译器生成默认实现，`= delete` 禁止某个函数
+
 ---
 
 ## 3. 析构函数
@@ -400,6 +414,12 @@ try {
 - C++ 的 **RAII（Resource Acquisition Is Initialization）** 是 C++ 最重要的资源管理模式：资源获取在构造函数中，释放 在析构函数中，确保资源不会泄漏。Java 没有等价机制，需要用 `try-with-resources` + `AutoCloseable` 接口来手动管理
 - C++ 需要**虚析构函数**是因为通过基类指针 `delete` 派生类对象时，必须正确调用派生类的析构函数。Java 有 GC，不需要手动 `delete`，所以不存在这个问题
 
+### 📌 本节小结
+
+- 析构函数 `~ClassName()` 在对象销毁时自动调用，用于释放资源（RAII 核心）
+- 会被继承的类必须用 `virtual ~` 析构函数，否则通过基类指针 delete 派生类对象会导致内存泄漏
+- Java 没有 RAII，用 `try-with-resources` + `AutoCloseable` 替代
+
 ---
 
 ## 4. this 指针
@@ -490,6 +510,12 @@ public void setTxMTU(int txMtu) {
 - C++ 的 `this` 是**指针**，需要用 `->` 访问成员或 `*this` 解引用。Java 的 `this` 是**引用**，直接用 `.` 访问成员
 - 两者都不能为 null，都指向调用方法的当前对象
 - 用法场景完全一致：区分参数和成员变量同名、链式调用返回自身、将自身传给其他函数
+
+### 📌 本节小结
+
+- `this` 是隐含的指针，指向调用成员函数的对象本身
+- 参数名与成员变量同名时必须用 `this->` 区分；不同名时可省略
+- C++ 的 `this` 是指针（用 `->`），Java 的 `this` 是引用（用 `.`）
 
 ---
 
@@ -632,6 +658,12 @@ public final class Uuid implements ReadOnlyUuid {
 - C++ 的 `const` 成员函数是**编译器强制执行**的约束，Java 只能通过**设计模式**来模拟
 - C++ 中 `const` 对象只能调用 `const` 成员函数，Java 没有这种限制
 - 这是 C++ 在类型安全方面优于 Java 的一个重要特性
+
+### 📌 本节小结
+
+- `const` 成员函数承诺不修改对象状态，编译器强制检查
+- `const` 对象只能调用 `const` 成员函数
+- Java 没有等价语法，只能通过不可变类设计或只读接口来模拟
 
 ---
 
@@ -804,6 +836,12 @@ public final class Uuid {
 - 访问语法不同：C++ 用 `::`，Java 用 `.`
 - 语义完全一致：都属于类而非对象，所有实例共享，静态方法没有 `this`
 
+### 📌 本节小结
+
+- `static` 成员变量属于类，所有对象共享；`static` 成员函数无 `this` 指针
+- 函数内 `static` 局部变量只初始化一次，常用于单例模式
+- 访问方式：C++ 用 `::`，Java 用 `.`
+
 ---
 
 ## 7. final 关键字
@@ -895,6 +933,12 @@ public class Base {
 - C++ 的 `final` 放在**类名后面**或**函数声明末尾**，Java 的 `final` 放在**`class`/返回类型前面**
 - Java 的 `final` 用途更广：还能修饰变量（不可重新赋值）、方法参数（方法内不可修改）。C++ 的 `final` 只用于类和虚函数
 - C++ 中禁止变量重新赋值用 `const`，Java 中用 `final`——同一个关键字在两种语言中含义不同
+
+### 📌 本节小结
+
+- `class Name final` 禁止类被继承，`void foo() final` 禁止虚函数被重写
+- 有 `virtual` 函数的类通常不应该是 `final`，值类型（如 `Uuid`、`RawAddress`）适合用 `final`
+- C++ 的 `final` 只用于类和虚函数，Java 的 `final` 还能修饰变量
 
 ---
 
@@ -1007,6 +1051,12 @@ public static void bdaddrToStream(byte[] p, RawAddress a) {
 - C++ 的 `inline` 是**编译期**优化提示，Java 的方法内联是 **JIT 运行期**自动优化
 - C++ 程序员需要关心 `inline` 的放置位置（头文件 vs 源文件），Java 程序员完全不需要
 - Java 的 JIT 内联甚至比 C++ 的 `inline` 更智能：它可以根据运行时 profiling 数据决定是否内联
+
+### 📌 本节小结
+
+- 函数体写在类定义内自动内联；写在头文件类外需加 `inline`
+- `inline` 是对编译器的建议，编译器可以忽略
+- Java 没有 `inline` 关键字，JIT 编译器自动决定方法内联
 
 ---
 
@@ -1136,6 +1186,12 @@ private:
 | 嵌套结构体 | `struct 名称 { ... };` | controller.h:194 |
 | 前置声明 | `struct 名称;` | eatt.h:284 |
 | 嵌套枚举 | `enum class 名称 { ... };` | eatt.h:37-41 |
+
+### 📌 本节小结
+
+- 嵌套类型（`using` 别名、`struct`、`enum`）放在类内部，避免全局命名空间污染
+- `using UUID128Bit = std::array<uint8_t, 16>` 比 `typedef` 更直观
+- Pimpl 用 `struct impl;` 前置声明 + `unique_ptr<impl>` 隐藏实现
 
 ---
 
@@ -1274,6 +1330,21 @@ private:
 7. 嵌套类型 → 辅助类型定义
 ```
 
+### 📌 本节小结
+
+- 阅读类的顺序：类名 → public 函数 → 构造函数 → 析构函数 → static 成员 → private 成员
+- 构造函数的参数和初始化列表告诉你创建对象必须提供什么
+- 好的类设计：public 放接口，private 放数据和内部辅助
+
+---
+
+## 常见错误
+
+1. **忘记初始化列表**：对 `const` 成员、引用成员、没有默认构造函数的类类型成员，不用初始化列表会编译错误
+2. **忘记虚析构函数**：会被继承的类如果不写 `virtual ~`，通过基类指针 delete 派生类对象会导致内存泄漏
+3. **忘记 `= default` / `= delete`**：定义了带参构造函数后默认构造函数不再自动生成，需要显式 `= default`；单例类需要 `= delete` 拷贝构造和赋值
+4. **混淆 `this->` 和成员名**：参数名与成员变量不同名时 `this->` 可省略，同名时必须加；末尾下划线命名（如 `tx_mtu_`）可避免冲突
+
 ---
 
 ## 附录：本教程涉及的所有源文件索引
@@ -1286,3 +1357,18 @@ private:
 | `system/types/include/bluetooth/types/address.h` | `RawAddress` 类（29-69行）、`BDADDR_TO_STREAM` 内联函数（83-87行） |
 | `system/gd/hci/controller.h` | `Controller` 类（28-226行）、`VendorCapabilities` 嵌套结构体（194-213行） |
 | `system/gd/os/handler.h` | `compare_task_by_time` 内联 Lambda（40-44行）、`Handler` 类（57-137行） |
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `class` | 定义类 | `class EattChannel { ... };` | `class` |
+| 构造函数 | 初始化对象 | `EattChannel(RawAddress& bda, uint16_t cid);` | 同名构造方法 |
+| 析构函数 | 释放资源 | `~EattChannel();` | `finalize()`（已废弃） |
+| `this` | 指向当前对象 | `this->tx_mtu_ = value;` | `this.txMtu = value;` |
+| `const` 成员函数 | 承诺不修改对象 | `bool IsEmpty() const;` | ❌ 无等价 |
+| `static` 成员 | 属于类而非对象 | `static Uuid From16Bit(uint16_t);` | `static` 成员 |
+| `final` | 禁止继承/重写 | `class Uuid final { ... };` | `final class Uuid` |
+| `inline` | 建议内联展开 | `inline void BDADDR_TO_STREAM(...);` | ❌ JIT自动优化 |

@@ -18,6 +18,8 @@
 
 ---
 
+> 📎 关联教材：02(类与对象), 06(现代C++特性), 10(命名空间)
+
 ## 1. 基本数据类型
 
 ### 1.1 为什么协议栈不用 int 和 char？
@@ -1402,3 +1404,18 @@ process(null);      // 调用 process(Object)，清晰
 > **下一步学习建议**：
 > - 掌握以上基础后，可以继续学习：智能指针（`std::unique_ptr`、`std::shared_ptr`）、枚举类（`enum class`）、命名空间（`namespace`）、虚函数与多态
 > - 尝试阅读 `eatt_impl.h` 中的完整代码，用本教材的知识点逐行分析
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|----------|
+| `uint8_t` / `uint16_t` / `uint32_t` | 固定宽度无符号整型 | `uint16_t cid_;` | `short` / `int`（Java无无符号） |
+| `const` | 运行时不可修改 | `const int kMax = 7;` | `final int kMax = 7;` |
+| `constexpr` | 编译期常量 | `static constexpr size_t kNumBytes128 = 16;` | `static final int`（基本类型） |
+| 引用 `T&` | 变量别名，必须初始化 | `const RawAddress& bd_addr` | 对象自动按引用传递 |
+| 指针 `T*` | 存储内存地址，可为空 | `alarm_t* timer_;` | 引用 + `null` |
+| `static` 成员 | 属于类而非对象 | `static Uuid From16Bit(uint16_t);` | `static` 成员 |
+| `struct` / `class` | 定义自定义类型 | `class EattChannel { ... };` | `class`（Java无struct） |
+| `nullptr` | C++11空指针字面量 | `eatt_tcb_(nullptr)` | `null` |

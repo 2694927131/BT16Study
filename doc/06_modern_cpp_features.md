@@ -22,6 +22,8 @@
 
 ---
 
+> 📎 关联教材：01(基础语法), 07(Lambda), 13(类型特征)
+
 ## 1. enum class（强类型枚举，C++11）
 
 ### 1.1 C 风格 enum 的问题
@@ -281,6 +283,13 @@ int val = s.getValue();  // 通过自定义方法获取整数值
 
 > **关键区别**：Java 的 `enum` 是真正的类，可以拥有字段、构造函数、方法和实现接口，功能远比 C++ `enum class` 丰富。C++ `enum class` 更轻量，只解决类型安全和大小控制问题。如果 C++ 需要"带方法的枚举"，通常用单独的类 + `static` 方法模拟。
 
+### 📌 本节小结
+
+- `enum class` 通过作用域隔离（必须用`类名::值`）彻底解决枚举值冲突问题
+- `enum class` 禁止隐式转换为整数，需要时必须用`static_cast`显式转换
+- 可指定底层类型（如`: uint8_t`），精确控制枚举大小，在蓝牙协议包中至关重要
+- 不同`enum class`可以有同名枚举值，互不冲突
+
 ---
 
 ## 2. constexpr（常量表达式，C++11/14）
@@ -482,6 +491,13 @@ static int bytesToBits(int bytes) { return bytes * 8; } // 普通方法，运行
 
 > **为什么 Java 不需要 `constexpr`？** Java 有垃圾回收和 JIT 编译器，运行时性能优化由 JVM 负责。Java 不需要像 C++ 那样在源码层面控制编译期计算，因为 JVM 会在运行时根据实际使用情况做更智能的优化（如内联、逃逸分析等）。
 
+### 📌 本节小结
+
+- `constexpr` 比 `const` 更严格，保证值在编译期确定，而非运行时
+- `constexpr` 函数既可在编译期调用（参数为常量时），也可在运行时调用
+- C++14起`constexpr`函数限制大幅放宽，支持局部变量和控制流
+- 蓝牙协议栈中UUID常量、HCI掩码等大量使用`constexpr`实现零运行时开销
+
 ---
 
 ## 3. auto 关键字（C++11）
@@ -677,6 +693,13 @@ var channel = channels.get(5);                       // 推导为 EattChannel（
 
 > **关键区别**：C++ 的 `auto` 需要配合 `&` 和 `const` 来控制值/引用语义，因为 C++ 有值语义和引用语义之分。Java 的 `var` 只有引用语义（对于对象类型），不需要这些修饰符。
 
+### 📌 本节小结
+
+- `auto`让编译器推导类型，不是"没有类型"，编译期类型已确定
+- 迭代器和lambda是`auto`最常见的使用场景，可大幅简化代码
+- `auto`默认丢弃引用和const，需要`const auto&`避免拷贝，`auto&`才能修改
+- 类型不明显时不要用`auto`，可读性优先
+
 ---
 
 ## 4. nullptr（C++11）
@@ -801,6 +824,13 @@ connect(null);  // 调用 connect(RawAddress)，无歧义
 ```
 
 > **关键区别**：C++ 需要 `nullptr` 来解决 `NULL`/`0` 在函数重载中的歧义问题。Java 没有这个问题，因为 Java 的引用类型和基本类型是完全不同的类别，`null` 只能赋给引用类型。
+
+### 📌 本节小结
+
+- `nullptr`类型为`std::nullptr_t`，不会与整数混淆，彻底解决重载歧义
+- `NULL`本质是整数0，在函数重载中可能调用错误的重载版本
+- 在模板中`nullptr`比`NULL`更安全，不会被推导为`int`
+- 新代码应始终使用`nullptr`，不再使用`NULL`或`0`表示空指针
 
 ---
 
@@ -1010,6 +1040,13 @@ for (var channel : channels.values()) {
 
 > **关键区别**：C++ 需要用 `const auto&` 避免不必要的拷贝，用 `auto&` 才能修改元素。Java 的 for-each 对引用类型天然不复制对象，也不需要 `const` 修饰。
 
+### 📌 本节小结
+
+- 范围for是迭代器循环的语法糖，任何有`begin()`/`end()`的类型都支持
+- 默认使用`const auto&`只读遍历，需要修改时用`auto&`，简单值类型可用`auto`
+- `auto`会复制元素，对大对象（如`std::string`）应避免，改用`const auto&`
+- 遍历时不能安全删除元素，需用迭代器方式
+
 ---
 
 ## 6. static_assert（编译期断言，C++11）
@@ -1159,6 +1196,13 @@ assert rawAddress.getBytes().length == 6 : "Address must be 6 bytes";
 ```
 
 > **为什么 Java 不需要 `static_assert`？** Java 运行在 JVM 上，对象布局由 JVM 管理，开发者无法也不需要控制类型大小。Java 也没有模板元编程的需求，因此编译期断言在 Java 中没有使用场景。
+
+### 📌 本节小结
+
+- `static_assert`在编译期检查条件，条件不满足则编译失败，零运行时开销
+- 常用于检查类型大小（如`sizeof(RawAddress) == 6`）和类型特性（如`std::is_trivial`）
+- 与模板结合使用，可在编译期验证模板参数是否满足要求
+- C++17起错误信息可省略，但仍建议提供有意义的描述
 
 ---
 
@@ -1346,6 +1390,13 @@ void process(Object value) {
 
 > **为什么 Java 不需要 `if constexpr`？** C++ 模板在编译期实例化，不同类型可能需要完全不同的代码路径，`if constexpr` 让这些路径互不干扰。Java 的泛型使用类型擦除，所有类型共享同一份字节码，不需要编译期分支。Java 用方法重载实现类似效果。
 
+### 📌 本节小结
+
+- `if constexpr`在编译期判断条件，不满足的分支不会被编译（可包含无效代码）
+- 常与`std::is_same_v`、`std::is_integral_v`等类型特征配合，在模板中根据类型选择代码路径
+- 替代函数重载时，所有逻辑集中在一个函数中，更易维护
+- 条件必须是编译期常量表达式，通常来自模板参数推导
+
 ---
 
 ## 8. [[nodiscard]] 和 [[fallthrough]]（C++17 属性）
@@ -1523,6 +1574,13 @@ boolean connect(RawAddress addr);
 ```
 
 > **为什么 Java 不需要这些属性？** Java 的注解系统（如 `@Deprecated`）提供了部分类似功能，但 `[[nodiscard]]` 和 `[[fallthrough]]` 这类编译器提示在 Java 社区中需求不强。Java 程序员通常依赖 IDE 警告和代码审查工具（如 Error Prone、SpotBugs）来发现这类问题，而非语言内置机制。
+
+### 📌 本节小结
+
+- `[[nodiscard]]`让编译器在返回值被忽略时发出警告，防止遗漏错误码或重要结果
+- `[[fallthrough]]`显式标记switch中有意的case穿透，消除编译器警告
+- 两者都是C++17标准属性，不影响运行时行为，只影响编译期检查
+- 对返回错误码的函数、资源获取函数应始终使用`[[nodiscard]]`
 
 ---
 
@@ -1795,6 +1853,13 @@ class EattExtension {
 
 > **关键区别**：C++ 的 `= delete` 是语言级别的禁止，编译器会直接报错。Java 需要通过访问控制（`private`）或运行时异常来模拟，不如 C++ 优雅。Java 不需要 `= default`，因为 Java 没有析构函数，默认构造函数的行为也更简单。
 
+### 📌 本节小结
+
+- `= delete`禁止函数调用，最常用于禁止拷贝构造和拷贝赋值（单例、资源管理类）
+- `= default`显式要求编译器生成默认实现，比手写空函数体更好（保持trivial性）
+- `= delete`还可用于禁止特定参数类型的重载（如禁止浮点参数）
+- 移动操作通常应标记`noexcept`，配合`= default`使用
+
 ---
 
 ## 10. std::optional（C++17）
@@ -2004,6 +2069,13 @@ RawAddress result = addr.orElseGet(RawAddress::empty);
 
 > **关键区别**：Java 的 `Optional` 有丰富的函数式 API（`map`、`filter`、`flatMap`、`ifPresent` 等），C++ 的 `std::optional` 更轻量，只提供基本操作。Java 社区推荐 `Optional` 只用作方法返回值，不建议作为字段类型；C++ 没有这个限制。
 
+### 📌 本节小结
+
+- `std::optional<T>`类型安全地表示"可能有值也可能没有"，替代返回特殊值或指针
+- 使用前必须检查`has_value()`或`if (opt)`，否则`*opt`和`opt.value()`可能出错
+- `value_or(default)`提供安全的默认值回退，是最安全的访问方式之一
+- 值存储在optional内部（非堆分配），生命周期自动管理
+
 ---
 
 ## 11. std::variant（C++17）
@@ -2204,6 +2276,13 @@ void setVolume(VolumeTarget target, int volume) {
 
 > **关键区别**：C++ 的 `variant` 是值类型，存储在栈上，零堆分配开销。Java 的替代方案都需要堆分配对象。Java 17+ 的密封类（sealed class）+ 模式匹配是最接近 `variant` 的特性，但仍然基于继承体系。
 
+### 📌 本节小结
+
+- `std::variant<A, B>`是类型安全的联合体，自动跟踪当前持有哪种类型
+- 支持非平凡类型（如`std::string`），比C风格`union`更安全
+- 访问方式：`std::get`（类型不匹配抛异常）、`std::get_if`（返回指针）、`std::visit`（最优雅）
+- 配合`if constexpr`使用`std::visit`，可编译期检查所有类型分支
+
 ---
 
 ## 总结：现代 C++ 特性一览
@@ -2225,3 +2304,76 @@ void setVolume(VolumeTarget target, int volume) {
 | `std::variant` | C++17 | 类型安全联合体 | 类型安全地表示"多种类型选一种" |
 
 这些特性共同构成了现代 C++ 的核心风格：**更安全、更简洁、更表达意图**。在蓝牙协议栈这样的系统级代码中，它们帮助开发者写出既高效又不容易出错的代码。
+
+---
+
+## 常见错误
+
+### 1. enum class 忘记使用 `::` 限定
+
+```cpp
+enum class State : uint8_t { PENDING, OPENED };
+State s = PENDING;              // ❌ 编译错误！必须用 State::PENDING
+State s = State::PENDING;       // ✅ 正确
+```
+
+初学者常习惯C风格enum直接使用枚举值，`enum class`强制要求完整限定名。
+
+### 2. constexpr 函数中包含运行时操作
+
+```cpp
+constexpr int compute(int x) {
+    static int count = 0;       // ❌ static变量是运行时概念，不能出现在constexpr函数中
+    count++;
+    return x * 2;
+}
+```
+
+`constexpr`函数在编译期调用时，所有操作必须是编译期可计算的。C++14放宽了限制，但仍不能有`static`变量、`throw`等运行时操作。
+
+### 3. auto 推导出意外类型
+
+```cpp
+std::vector<bool> flags = {true, false, true};
+auto flag = flags[0];           // ⚠️ flag的类型是std::vector<bool>::reference，不是bool！
+// 这个代理类型可能导致意外行为
+
+auto x = 42;                    // int，但如果你需要size_t呢？
+size_t y = 42;                  // 明确指定类型更安全
+```
+
+`auto`推导的是初始化表达式的精确类型，有时与直觉不符。`vector<bool>`的`[]`返回代理类型是最经典的陷阱。
+
+### 4. optional 忘记检查 has_value
+
+```cpp
+std::optional<RawAddress> addr = RawAddress::FromString(str);
+RawAddress a = addr.value();    // ❌ 如果addr为空，抛出std::bad_optional_access异常！
+RawAddress b = *addr;           // ❌ 如果addr为空，未定义行为！
+
+// ✅ 正确做法：先检查
+if (addr.has_value()) {
+    RawAddress a = addr.value();
+}
+// ✅ 或使用value_or
+RawAddress a = addr.value_or(RawAddress::kEmpty);
+```
+
+---
+
+## 速查卡
+
+| 语法 | 用途 | 示例 | Java类比 |
+|------|------|------|---------|
+| `enum class` | 强类型枚举 | `enum class State : uint8_t { A, B };` | `enum State { A, B }` |
+| `constexpr` | 编译期常量/函数 | `constexpr size_t N = 16;` | `static final int N = 16;` |
+| `auto` | 类型推导 | `auto it = map.find(key);` | `var it = map.get(key);` |
+| `nullptr` | 类型安全空指针 | `int* p = nullptr;` | `Integer p = null;` |
+| 范围for | 简洁遍历 | `for (const auto& e : vec) {}` | `for (var e : list) {}` |
+| `static_assert` | 编译期断言 | `static_assert(sizeof(X)==6, "");` | 无等价 |
+| `if constexpr` | 编译期条件分支 | `if constexpr (std::is_same_v<T,int>) {}` | 方法重载 |
+| `[[nodiscard]]` | 忽略返回值警告 | `[[nodiscard]] bool Connect();` | `@CheckReturnValue` |
+| `=delete` | 禁止函数 | `ClassName(const ClassName&) = delete;` | `private`构造函数 |
+| `=default` | 显式默认实现 | `ClassName() = default;` | 自动提供 |
+| `std::optional` | 可选值 | `std::optional<RawAddress> addr;` | `Optional<RawAddress>` |
+| `std::variant` | 类型安全联合体 | `std::variant<RawAddress, int> target;` | 密封类+模式匹配 |
