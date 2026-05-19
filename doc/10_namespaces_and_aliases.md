@@ -227,6 +227,43 @@ using namespace bluetooth::legacy::stack::sdp;
 
 > **注意**：`connection_manager` 是一个独立的命名空间，不在 `bluetooth` 内部。这体现了命名空间的灵活性——不同模块可以选择自己的命名空间策略。
 
+### ☕ Java 类比
+
+C++ 的 `namespace` 对应 Java 的 `package`，两者都用于组织代码和避免名称冲突：
+
+| 对比项 | C++ `namespace` | Java `package` |
+|--------|-----------------|----------------|
+| 声明方式 | `namespace name { ... }` | `package com.example.name;`（文件顶部声明） |
+| 嵌套 | `namespace A::B::C { }` | `package com.example.a.b.c;`（用 `.` 分隔） |
+| 跨文件定义 | 同一命名空间可在多个文件中扩展 | 一个包对应一个目录 |
+| 完全限定名 | `bluetooth::hci::Controller` | `bluetooth.hci.Controller` |
+| 命名空间别名 | `namespace short = long::ns;` | `import bluetooth.hci.Controller;`（导入单个类） |
+| 匿名命名空间 | `namespace { ... }` | 包私有（无 `public` 修饰符） |
+
+**C++ 命名空间示例：**
+
+```cpp
+namespace bluetooth::hci {
+class Controller { /* ... */ };
+}
+// 使用
+bluetooth::hci::Controller* ctrl;
+```
+
+**Java 包示例：**
+
+```java
+package bluetooth.hci;
+public class Controller { /* ... */ }
+// 使用
+bluetooth.hci.Controller ctrl;
+// 或
+import bluetooth.hci.Controller;
+Controller ctrl;
+```
+
+> **关键区别**：C++ 的命名空间是代码块级别的，可以在任意文件中多次扩展。Java 的包是文件/目录级别的，一个 `.java` 文件只能属于一个包。C++ 的嵌套命名空间用 `::` 分隔，Java 用 `.` 分隔。
+
 ---
 
 ## 2. 匿名命名空间
@@ -342,6 +379,39 @@ using namespace __unique_name_12345;  // 当前编译单元自动 using
 ```
 
 由于每个编译单元的 `__unique_name` 不同，其他 `.cc` 文件无法访问这些符号，从而实现了编译单元级别的封装。
+
+### ☕ Java 类比
+
+C++ 的匿名命名空间对应 Java 的**包私有访问**（不写访问修饰符）：
+
+| 对比项 | C++ 匿名命名空间 | Java 包私有 |
+|--------|-----------------|------------|
+| 可见范围 | 当前编译单元（.cc 文件） | 当前包（package） |
+| 限制函数 | ✅ | ✅（不加 `public`/`protected`/`private`） |
+| 限制变量 | ✅ | ✅ |
+| 限制类 | ✅ | ✅ |
+| 限制模板 | ✅ | 不适用（Java 无模板） |
+| 粒度 | 文件级别 | 包级别（更粗） |
+
+**C++ 匿名命名空间示例：**
+
+```cpp
+namespace {
+void internal_helper() { /* 只在当前 .cc 文件可见 */ }
+std::map<RawAddress, tAPPS_CONNECTING> bgconn_dev;
+}
+```
+
+**Java 包私有示例：**
+
+```java
+// 不加 public 修饰符 → 包私有
+class InternalHelper { /* 只在当前包可见 */ }
+// 注意：Java 的包私有是包级别的，不是文件级别的
+// 同一包中的其他类也可以访问
+```
+
+> **关键区别**：C++ 匿名命名空间的可见范围是**单个编译单元**（.cc 文件），粒度更细。Java 的包私有可见范围是**整个包**，粒度更粗。如果 Java 需要文件级别的封装，只能通过内部类或嵌套类实现。
 
 ---
 
@@ -570,6 +640,47 @@ public:
 
 `boottime_clock` 遵循 C++ 标准库 Clock 的约定——必须提供 `duration`、`time_point` 和 `is_steady` 成员类型。这种模式在标准库的 `std::chrono::system_clock`、`std::chrono::steady_clock` 中也能看到。
 
+### ☕ Java 类比
+
+Java **没有**与 C++ `using` 类型别名等价的机制。Java 不支持为类型创建别名。
+
+| 对比项 | C++ `using` 类型别名 | Java |
+|--------|---------------------|------|
+| 基本类型别名 | `using MyInt = int;` | 无等价 |
+| 复杂类型别名 | `using Callback = std::function<void(int)>;` | 无等价 |
+| 模板别名 | `template<T> using VecPtr = unique_ptr<vector<T>>;` | 无等价 |
+| 类内部类型别名 | `using UUID128Bit = std::array<uint8_t, 16>;` | 无等价 |
+| 替代方案 | — | 继承（`class CallbackList extends ArrayList<Callback>`）、委托模式 |
+
+**C++ using 类型别名示例：**
+
+```cpp
+using TimePoint = os::boottime_clock::time_point;
+using CompletedAclPacketsCallback = common::ContextualCallback<void(uint16_t, uint16_t)>;
+using Octet16 = std::array<uint8_t, 16>;
+```
+
+**Java 的替代方案：**
+
+```java
+// Java 没有类型别名，只能用具体类或接口
+// 方式 1：直接使用完整类型（最常见）
+ContextualCallback<Integer, Integer> callback;
+
+// 方式 2：定义子类（不推荐，语义不同）
+// class CompletedAclPacketsCallback extends ContextualCallback<Integer, Integer> {}
+
+// 方式 3：定义接口（推荐用于回调类型）
+@FunctionalInterface
+interface CompletedAclPacketsCallback {
+    void onCompleted(int handle, int numPackets);
+}
+```
+
+> **关键区别**：C++ 的 `using` 类型别名不创建新类型，只是给现有类型起一个短名，零运行时开销。Java 没有这个功能，只能使用完整类型名或通过继承/接口间接实现，后者会引入新的类型层次。
+
+---
+
 ```cpp
 // 来源: system/types/include/bluetooth/types/uuid.h:46
 class Uuid {
@@ -704,6 +815,39 @@ using MyVec = std::vector<T>;   // 正确！
 
 > **初学者提示**：在新代码中，应该使用 `using` 而不是 `typedef`。但阅读旧代码时，你必须能读懂 `typedef`。协议栈正在逐步将 `typedef` 迁移为 `using`，但这是一个漫长的过程。
 
+### ☕ Java 类比
+
+Java **没有** `typedef`，也没有任何类型别名机制。
+
+| 对比项 | C++ `typedef` | Java |
+|--------|--------------|------|
+| 基本类型别名 | `typedef int MyInt;` | 无等价 |
+| 函数指针类型 | `typedef void (*Callback)(int);` | 无等价（Java 用函数式接口） |
+| 结构体类型 | `typedef struct { int x; } Point;` | 无等价（Java 用 `class`/`record`） |
+| 与 `using` 的关系 | 旧语法，功能等价 | 不适用 |
+
+**C++ typedef 示例：**
+
+```cpp
+typedef void (*tBTM_RLEROLE_CHG_CBACK)(uint8_t new_role, tHCI_STATUS hci_status);
+typedef uint8_t tBLE_ADDR_TYPE;
+```
+
+**Java 的替代方案：**
+
+```java
+// 函数指针 → 函数式接口
+@FunctionalInterface
+interface RleRoleChangeCallback {
+    void onRoleChange(byte newRole, byte hciStatus);
+}
+
+// 基本类型别名 → 无等价，直接使用原始类型
+byte bleAddressType;  // 无法起别名
+```
+
+> **关键区别**：C++ 的 `typedef` 是纯编译期别名，零运行时开销。Java 的替代方案（接口、类）会创建新的类型。Java 选择不支持类型别名，是为了保持类型系统的简洁性。
+
 ---
 
 ## 5. using 声明
@@ -797,6 +941,35 @@ using namespace bluetooth;  // ❌ 所有包含此头文件的代码都会被污
 **为什么头文件中不能用 `using namespace`？**
 
 因为头文件会被其他文件 `#include`，如果头文件中有 `using namespace`，所有包含该头文件的代码都会被强制引入整个命名空间，可能导致意外的名称冲突，而且这种冲突很难追踪。
+
+### ☕ Java 类比
+
+C++ 的 `using` 声明和 `using namespace` 对应 Java 的 `import` 机制：
+
+| 对比项 | C++ `using` 声明 | Java `import` |
+|--------|-----------------|---------------|
+| 引入单个名称 | `using base::Callback;` | `import bluetooth.common.Callback;` |
+| 引入整个命名空间 | `using namespace bluetooth;` | `import bluetooth.hci.*;`（通配符导入） |
+| 引入静态成员 | `using std::move;` | `import static java.util.Collections.sort;` |
+| 重新导出 | `using base::Callback;`（在命名空间内） | 无等价（Java 无法重新导出） |
+| 头文件中禁用 | ❌ 头文件中不能用 `using namespace` | ✅ 任何地方都可以 `import` |
+
+**C++ using 声明示例：**
+
+```cpp
+using base::Callback;       // 引入单个名称
+using namespace bluetooth;  // 引入整个命名空间
+```
+
+**Java import 示例：**
+
+```java
+import bluetooth.common.Callback;    // 引入单个类
+import bluetooth.hci.*;              // 通配符导入
+import static java.util.Collections.sort;  // 静态导入
+```
+
+> **关键区别**：C++ 的 `using namespace` 比 Java 的通配符 `import` 更危险——C++ 的 `using namespace` 会影响当前编译单元的所有后续代码，且头文件中的 `using namespace` 会"泄漏"给所有包含该头文件的代码。Java 的 `import` 只影响当前文件，不会传播给其他类。C++ 的 `using` 声明可以在命名空间内"重新导出"名称，Java 没有这个功能。
 
 ---
 
@@ -963,6 +1136,21 @@ namespace hci {
 ```
 
 两种方式都能防止头文件重复包含。`#pragma once` 更简洁，但不是 C++ 标准的一部分；`#ifndef` 方式更通用。协议栈中两种都有使用。
+
+### ☕ Java 类比
+
+C++ 的头文件组织与 Java 的包/模块系统差异很大：
+
+| 对比项 | C++ 头文件 + 命名空间 | Java 包 + import |
+|--------|----------------------|-----------------|
+| 声明与实现分离 | `.h` 声明 + `.cc` 实现 | 不分离（一个 `.java` 文件包含全部） |
+| 包含保护 | `#pragma once` / `#ifndef` | 不需要（Java 自动处理） |
+| 声明依赖 | `#include "header.h"` | `import package.Class;` |
+| 命名空间与目录 | 约定对应（非强制） | **强制对应**（包名 = 目录路径） |
+| 循环依赖 | 可以（前向声明） | 不可以（编译器检测） |
+| 跨模块引用 | 完全限定名或 `using` | `import` 或完全限定名 |
+
+> **关键区别**：Java 的包系统比 C++ 的命名空间更严格——Java 强制要求包名与目录结构对应，且一个文件只能属于一个包。C++ 的命名空间是纯逻辑分组，与文件/目录无关。Java 不需要头文件保护，因为 Java 编译器自动处理重复声明问题。
 
 ---
 

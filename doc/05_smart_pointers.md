@@ -84,6 +84,54 @@ void dangerous_function() {
 std::map<uint16_t, std::shared_ptr<EattChannel>> eatt_channels;
 ```
 
+### ☕ Java 类比
+
+| 特性 | C++ 智能指针 | Java |
+|------|-----------|------|
+| 内存管理 | 手动 + 智能指针辅助 | **自动垃圾回收（GC）** |
+| 内存泄漏风险 | ✅ 存在（循环引用、裸指针误用） | ⚠️ 较低（GC 处理大部分情况） |
+| 析构函数确定性 | ✅ 确定的时间点调用 | ❌ GC 决定，不可预测 |
+| 需要 `delete` | ✅ 手动或通过智能指针 | ❌ 不需要 |
+
+**Java 为什么不需要智能指针？**
+
+Java 有**垃圾回收器（Garbage Collector）**，自动追踪对象引用关系，当对象不再被任何引用指向时自动回收内存。C++ 智能指针本质上是在手动模拟 GC 的引用计数功能：
+
+| C++ 概念 | Java 等价 |
+|---------|----------|
+| `new` + 手动 `delete` | ❌ 不存在（GC 自动回收） |
+| `unique_ptr` | ❌ 不需要（GC 管理） |
+| `shared_ptr`（引用计数） | GC 的可达性分析（更强大） |
+| `weak_ptr`（弱引用） | `WeakReference<T>` |
+| RAII | `try-with-resources` + `AutoCloseable` |
+
+```cpp
+// C++: 必须用智能指针避免内存泄漏
+void process_device() {
+    auto channel = std::make_unique<EattChannel>(bda, cid, mtu, rx_mtu);
+    if (some_error) {
+        return;  // unique_ptr 自动释放，不会泄漏
+    }
+    // channel 离开作用域自动释放
+}
+```
+
+```java
+// Java: GC 自动管理，不需要智能指针
+void processDevice() {
+    EattChannel channel = new EattChannel(bda, cid, mtu, rxMtu);
+    if (someError) {
+        return;  // GC 会在合适时机回收 channel，不会泄漏
+    }
+    // channel 不再被引用时，GC 自动回收
+}
+```
+
+**关键差异**：
+- Java 的 GC 比 C++ 的 `shared_ptr` 引用计数**更强大**：GC 可以处理循环引用（通过可达性分析），而 `shared_ptr` 的循环引用会导致内存泄漏
+- C++ 的 RAII 提供了**确定性的资源释放**（析构函数在确定的时间点调用），Java 的 `finalize()` 不可预测，所以 Java 用 `try-with-resources` 替代
+- C++ 的智能指针是**零开销抽象**（`unique_ptr` 无额外开销），Java 的 GC 有运行时开销（STW 停顿等）
+
 ---
 
 ## 2. std::unique_ptr（独占所有权）
@@ -399,6 +447,57 @@ std::unique_ptr<T> Queue<T>::TryDequeue() {
 std::queue<std::unique_ptr<T>> queue_;  // 队列拥有所有数据
 ```
 
+### ☕ Java 类比
+
+| 特性 | C++ `unique_ptr` | Java |
+|------|-----------------|------|
+| 独占所有权 | ✅ 不可拷贝，只能移动 | ❌ 不需要（GC 管理） |
+| 所有权转移 | `std::move(ptr)` | 直接赋值引用（GC 不关心所有权） |
+| 自动释放 | 离开作用域自动 `delete` | GC 自动回收 |
+| 自定义删除器 | `unique_ptr<T, Deleter>` | `Cleaner`（Java 9+）/ `PhantomReference` |
+| Pimpl 惯用法 | ✅ 核心用途 | ❌ 不需要（Java 天然隔离） |
+
+**对比代码**：
+
+```cpp
+// C++: unique_ptr 独占所有权
+auto channel = std::make_unique<EattChannel>(bda, cid, tx_mtu, rx_mtu);
+channel->EattChannelSetTxMTU(256);  // 像裸指针一样使用
+// auto ch2 = channel;              // 编译错误！不能拷贝
+auto ch2 = std::move(channel);       // 所有权转移，channel 变 nullptr
+```
+
+```java
+// Java: 不需要 unique_ptr，GC 自动管理
+EattChannel channel = new EattChannel(bda, cid, txMtu, rxMtu);
+channel.setTxMTU(256);  // 直接使用
+EattChannel ch2 = channel;  // 只是复制引用，GC 管理生命周期
+// 没有所有权概念，不需要 move
+```
+
+**对比代码——自定义删除器**：
+
+```cpp
+// C++: unique_ptr + 自定义删除器管理 C 风格资源
+using unique_alarm_ptr = std::unique_ptr<alarm_t, decltype(&alarm_free)>;
+alarm_t* timeout = alarm_new("name");
+unique_alarm_ptr alarm(timeout, &alarm_free);
+// alarm 离开作用域时自动调用 alarm_free(timeout)
+```
+
+```java
+// Java: 用 Cleaner（Java 9+）管理本地资源
+Cleaner cleaner = Cleaner.create();
+AlarmT timeout = AlarmT.newAlarm("name");
+cleaner.register(timeout, () -> AlarmT.alarmFree(timeout));  // 注册清理动作
+// timeout 变为不可达时，cleaner 自动调用 alarmFree
+```
+
+**关键差异**：
+- Java **不需要 `unique_ptr`**，因为 GC 自动管理所有对象的生命周期
+- C++ 的 `unique_ptr` 明确表达"独占所有权"的设计意图，Java 中没有等价概念——所有引用都是共享的
+- C++ 的自定义删除器模式（如 `unique_alarm_ptr`）在 Java 中用 `Cleaner` 或 `PhantomReference` 替代，但不如 C++ 优雅
+
 ---
 
 ## 3. std::shared_ptr（共享所有权）
@@ -578,6 +677,39 @@ Octet16 gatts_calculate_database_hash(
 // btm_int_types.h:110
 std::shared_ptr<TimestampedStringCircularBuffer> history_{nullptr};
 ```
+
+### ☕ Java 类比
+
+| 特性 | C++ `shared_ptr` | Java 引用 |
+|------|-----------------|----------|
+| 共享所有权 | ✅ 引用计数 | ✅ GC 可达性分析（更强大） |
+| 引用计数 | 显式（`use_count()`） | 隐式（GC 内部追踪） |
+| 循环引用问题 | ⚠️ 会导致内存泄漏 | ❌ GC 自动处理 |
+| 所有权语义 | 明确（共享所有权） | 隐式（所有引用等价） |
+
+**对比代码**：
+
+```cpp
+// C++: shared_ptr 管理共享对象
+auto channel = std::make_shared<EattChannel>(bda, cid, 256, 64);
+auto ch2 = channel;   // 引用计数 +1
+auto ch3 = channel;   // 引用计数 +1
+// 三者共享所有权，最后一个销毁时对象被删除
+```
+
+```java
+// Java: 所有对象引用天然共享
+EattChannel channel = new EattChannel(bda, cid, 256, 64);
+EattChannel ch2 = channel;  // 复制引用
+EattChannel ch3 = channel;  // 复制引用
+// 三者指向同一对象，GC 在所有引用消失后回收
+```
+
+**关键差异**：
+- Java 的引用**天然就是共享的**，不需要 `shared_ptr`。GC 通过可达性分析自动判断对象是否还在使用
+- C++ 的 `shared_ptr` 有**循环引用问题**（两个对象互相持有 `shared_ptr` 导致内存泄漏），Java 的 GC 没有这个问题
+- C++ 的 `shared_ptr` 有**引用计数开销**（原子操作），Java 的引用赋值无额外开销
+- C++ 的 `shared_ptr` 提供了**明确的所有权语义**，Java 的引用不区分"拥有"和"借用"
 
 ---
 
@@ -760,6 +892,52 @@ do_in_main_thread_delayed(
     std::chrono::milliseconds(timeout_ms));
 // → 如果 this 被销毁，回调执行时访问悬空指针 → 崩溃！
 ```
+
+### ☕ Java 类比
+
+| 特性 | C++ `weak_ptr` | Java `WeakReference<T>` |
+|------|---------------|------------------------|
+| 不增加引用计数 | ✅ | ✅（不影响 GC 可达性） |
+| 获取强引用 | `weak.lock()` 返回 `shared_ptr` | `weak.get()` 返回 `T`（可能为 null） |
+| 检查是否过期 | `weak.expired()` | `weak.get() == null` |
+| 典型用途 | 打破 `shared_ptr` 循环引用 | 缓存、防止内存泄漏 |
+| 线程安全 | `lock()` 是原子操作 | `get()` 非原子 |
+
+**对比代码**：
+
+```cpp
+// C++: weak_ptr 打破循环引用
+struct Channel {
+    std::weak_ptr<Device> device;  // 弱引用，不增加引用计数
+};
+
+auto locked = device_weak.lock();  // 尝试提升为 shared_ptr
+if (locked) {
+    locked->DoSomething();  // 对象仍存在
+} else {
+    // 对象已被销毁
+}
+```
+
+```java
+// Java: WeakReference 观察可能被 GC 的对象
+import java.lang.ref.WeakReference;
+
+WeakReference<Device> deviceRef = new WeakReference<>(device);
+
+Device dev = deviceRef.get();  // 尝试获取强引用
+if (dev != null) {
+    dev.doSomething();  // 对象仍存在
+} else {
+    // 对象已被 GC 回收
+}
+```
+
+**关键差异**：
+- C++ 的 `weak_ptr` 必须配合 `shared_ptr` 使用，Java 的 `WeakReference` 可以配合任何对象引用使用
+- C++ 的 `weak_ptr::lock()` 是**原子操作**（线程安全），Java 的 `WeakReference::get()` 不是原子的
+- Java 还有 `SoftReference`（内存不足时才回收）和 `PhantomReference`（对象 finalize 后通知），C++ 没有这些区分
+- 蓝牙协议栈中使用的 `base::WeakPtr`（Chromium 版本）更接近 Java 的 `WeakReference`——不需要 `shared_ptr`，直接与对象生命周期绑定
 
 ---
 
@@ -1013,6 +1191,71 @@ private:
 3. **额外的指针间接访问**：每次访问 impl 成员都多了一次指针解引用，在极端性能敏感的场景中可能有影响。但在蓝牙协议栈中，这个开销可以忽略不计。
 
 4. **调试稍困难**：impl 的内容在调试器中可能需要多一层间接才能查看。
+
+### ☕ Java 类比
+
+| 特性 | C++ Pimpl | Java |
+|------|----------|------|
+| 目的 | 隐藏实现细节、减少编译依赖 | ❌ **不需要** |
+| 原因 | C++ 头文件暴露实现细节，修改会触发重编译 | Java 天然隔离接口和实现 |
+| 替代方案 | — | `private` 成员 + 接口 |
+
+**Java 为什么不需要 Pimpl？**
+
+Pimpl 解决的是 C++ 独有的**头文件依赖问题**。在 C++ 中：
+- 头文件（`.h`）包含类的完整定义，包括所有私有成员
+- 修改私有成员（如添加一个变量）会导致所有 `#include` 该头文件的源文件重新编译
+- Pimpl 通过将私有成员移到 `.cc` 文件来避免这个问题
+
+Java **天然不存在这个问题**：
+- Java 没有"头文件/源文件"的分离
+- `.java` 编译为 `.class` 字节码，使用者只能看到 `public` 成员
+- 修改 `private` 成员不需要重新编译使用方——只需替换 `.class` 文件
+- Java 的 `private` 访问控制已经实现了 Pimpl 想要达到的隔离效果
+
+```cpp
+// C++: 需要 Pimpl 隐藏实现
+// eatt.h（头文件）
+class EattExtension {
+public:
+    void Connect(const RawAddress& bd_addr);
+private:
+    struct impl;                    // 前向声明，隐藏实现
+    std::unique_ptr<impl> pimpl_;   // 不透明指针
+};
+
+// eatt.cc（源文件）
+struct EattExtension::impl {
+    std::unique_ptr<eatt_impl> eatt_impl_;  // 真正的实现
+    tL2CAP_APPL_INFO reg_info_;
+    // 修改这里不需要重新编译其他文件
+};
+```
+
+```java
+// Java: 不需要 Pimpl，private 天然隔离
+public class EattExtension {
+    public void connect(RawAddress bdAddr) {
+        impl.connect(bdAddr);
+    }
+
+    // 直接持有实现类，不需要隐藏
+    // 修改 Impl 的内部结构不影响使用方
+    private Impl impl = new Impl();
+
+    // Impl 可以是内部类，也可以是独立类
+    private static class Impl {
+        private EattImpl eattImpl;
+        private RegInfo regInfo;
+        // 修改这里不需要重新编译使用方
+    }
+}
+```
+
+**关键差异**：
+- Java 的 `private` 访问控制 + 字节码编译模型**天然实现了 Pimpl 的目标**，不需要额外的设计模式
+- C++ 的 Pimpl 是为了解决**编译模型**的问题（头文件暴露实现），不是面向对象设计的问题
+- Java 程序员永远不需要考虑"修改私有成员会导致其他文件重新编译"的问题
 
 ---
 

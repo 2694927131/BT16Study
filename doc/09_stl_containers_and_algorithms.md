@@ -99,6 +99,36 @@ std::array<uint8_t, 6> address;
 
 > `std::array` 的大小是模板参数，编译期确定。如果你需要运行时动态改变大小，请用 `std::vector`。
 
+### ☕ Java 类比
+
+Java **没有**与 `std::array` 完全等价的固定大小数组容器。Java 的基本类型数组（如 `byte[]`）最接近，但缺少 STL 接口。
+
+| 对比项 | C++ `std::array<T, N>` | Java `T[]` 基本数组 |
+|--------|------------------------|---------------------|
+| 大小编译期确定 | 是（模板参数） | 运行时确定 |
+| 获取大小 | `arr.size()` | `arr.length` |
+| 赋值 | `arr2 = arr1` | `arr2 = arr1.clone()` 或 `Arrays.copyOf` |
+| 边界检查 | `at()` 有，`[]` 无 | `arr[i]` 抛 `ArrayIndexOutOfBoundsException` |
+| 与算法配合 | 直接用 `begin()`/`end()` | 用 `Arrays.stream()` 或 `Array` 工具类 |
+| 零开销 | 是（无额外内存） | 是（无额外内存） |
+
+**C++ std::array 示例：**
+
+```cpp
+std::array<uint8_t, 6> address = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+size_t len = address.size();  // 6
+```
+
+**Java 近似写法：**
+
+```java
+byte[] address = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+int len = address.length;  // 6
+// 注意：Java 数组大小运行时确定，无法编译期约束
+```
+
+> **关键区别**：C++ 的 `std::array` 大小是编译期常量，可以用于模板参数和 `constexpr` 计算。Java 的数组大小运行时确定，无法在编译期约束。
+
 ---
 
 ## 2. std::vector — 动态数组
@@ -214,6 +244,38 @@ std::vector<uint16_t> connecting_cids =
 ### 2.5 小贴士
 
 > `vector` 在尾部操作是 O(1)，但在中间插入/删除是 O(n)。如果你的操作主要在两端进行，考虑用 `std::deque`。
+
+### ☕ Java 类比
+
+C++ 的 `std::vector<T>` 对应 Java 的 `ArrayList<T>`：
+
+| 对比项 | C++ `std::vector<T>` | Java `ArrayList<T>` |
+|--------|---------------------|---------------------|
+| 底层实现 | 连续内存动态数组 | 动态数组（`Object[]`） |
+| 存储方式 | 直接存储对象值 | 存储引用（基本类型需装箱） |
+| 尾部添加 | `push_back()` / `emplace_back()` | `add()` |
+| 尾部删除 | `pop_back()` | `removeLast()` (Java 21+) |
+| 随机访问 | `v[i]` / `v.at(i)` | `list.get(i)` |
+| 大小 | `v.size()` | `list.size()` |
+| 容量 | `v.capacity()` | 无直接等价 |
+| 原地构造 | `emplace_back(args...)` | 无（Java 对象在堆上创建） |
+| 内存连续 | 是 | 是（引用数组连续） |
+
+**C++ vector 示例：**
+
+```cpp
+std::vector<eatt_device> devices;
+devices.emplace_back(bd_addr, default_mtu, max_mps);  // 原地构造
+```
+
+**Java ArrayList 示例：**
+
+```java
+ArrayList<EattDevice> devices = new ArrayList<>();
+devices.add(new EattDevice(bdAddr, defaultMtu, maxMps));  // 堆上创建，添加引用
+```
+
+> **关键区别**：C++ `vector` 直接存储对象值，扩容时需要移动/拷贝对象。Java `ArrayList` 存储引用，扩容只复制引用数组。C++ 的 `emplace_back` 可以原地构造避免临时对象，Java 不需要这个优化（对象始终在堆上创建）。
 
 ---
 
@@ -350,6 +412,40 @@ std::map<RawAddress, tAPPS_CONNECTING> bgconn_dev;
 
 > `std::map` 的键会自动排序。如果你不需要排序，只需要快速查找，用 `std::unordered_map` 可以获得更好的性能。
 
+### ☕ Java 类比
+
+C++ 的 `std::map<K, V>` 对应 Java 的 `TreeMap<K, V>`：
+
+| 对比项 | C++ `std::map<K, V>` | Java `TreeMap<K, V>` |
+|--------|---------------------|---------------------|
+| 底层实现 | 红黑树 | 红黑树 |
+| 键的顺序 | 有序（升序） | 有序（自然顺序或 `Comparator`） |
+| 查找复杂度 | O(log n) | O(log n) |
+| 插入 | `insert({k, v})` / `m[k] = v` | `put(k, v)` |
+| 查找 | `find(k)` 返回迭代器 | `get(k)` 返回值或 `null` |
+| 删除 | `erase(k)` | `remove(k)` |
+| 遍历 | `for (const auto& [k, v] : m)` | `for (var e : m.entrySet())` |
+| 键不存在时 `[]` | 自动插入默认值 | `get()` 返回 `null`（不自动插入） |
+
+**C++ map 示例：**
+
+```cpp
+std::map<uint16_t, std::shared_ptr<EattChannel>> channels;
+auto it = channels.find(lcid);
+if (it != channels.end()) { auto ch = it->second; }
+channels[lcid] = channel;  // 键不存在则自动插入
+```
+
+**Java TreeMap 示例：**
+
+```java
+TreeMap<Integer, EattChannel> channels = new TreeMap<>();
+EattChannel ch = channels.get(lcid);  // 不存在返回 null
+channels.put(lcid, channel);          // 插入或更新
+```
+
+> **关键区别**：C++ `map` 的 `[]` 运算符在键不存在时会自动插入默认值，可能导致意外行为。Java `TreeMap.get()` 不会自动插入，更安全。Java 默认推荐 `HashMap`（无序，O(1)），`TreeMap` 只在需要有序键时使用。
+
 ---
 
 ## 4. std::unordered_map — 哈希映射
@@ -441,6 +537,46 @@ for (const auto& [key, value] : device_map) {
 
 > 如果你的键是标准类型（`int`、`std::string` 等），且不需要键有序，优先用 `unordered_map`。如果键是自定义类型，需要额外提供 `std::hash` 特化，这时可以权衡是否用 `map` 更简单。
 
+### ☕ Java 类比
+
+C++ 的 `std::unordered_map<K, V>` 对应 Java 的 `HashMap<K, V>`：
+
+| 对比项 | C++ `std::unordered_map<K, V>` | Java `HashMap<K, V>` |
+|--------|-------------------------------|---------------------|
+| 底层实现 | 哈希表 | 哈希表 |
+| 查找复杂度 | 平均 O(1)，最坏 O(n) | 平均 O(1)，最坏 O(log n)（Java 8 红黑树优化） |
+| 键的顺序 | 无序 | 无序 |
+| 自定义键 | 需特化 `std::hash` + `operator==` | 需重写 `hashCode()` + `equals()` |
+| 插入 | `insert({k, v})` / `m[k] = v` | `put(k, v)` |
+| 查找 | `find(k)` 返回迭代器 | `get(k)` 返回值或 `null` |
+| 是否含键 | `count(k)` 或 `find(k)` | `containsKey(k)` |
+
+**C++ 自定义哈希键：**
+
+```cpp
+namespace std {
+template <>
+struct hash<RawAddress> {
+    size_t operator()(const RawAddress& addr) const { /* ... */ }
+};
+}
+std::unordered_map<RawAddress, DeviceInfo> device_map;
+```
+
+**Java 自定义哈希键：**
+
+```java
+class RawAddress {
+    @Override
+    public int hashCode() { /* ... */ }
+    @Override
+    public boolean equals(Object obj) { /* ... */ }
+}
+HashMap<RawAddress, DeviceInfo> deviceMap = new HashMap<>();
+```
+
+> **关键区别**：C++ 需要在 `std` 命名空间中特化 `std::hash`，Java 只需在类中重写 `hashCode()` 和 `equals()`。Java 的方式更自然，因为哈希行为是类自身的责任。C++ 的方式更灵活，可以为第三方类型添加哈希支持。
+
 ---
 
 ## 5. std::set — 有序集合
@@ -520,6 +656,39 @@ doing_bg_conn.erase(app_id);     // 删除
 ### 5.4 小贴士
 
 > 如果你只需要"判断某个元素是否存在"，`set` 比 `vector` 更高效。如果元素不需要排序且数量较大，考虑 `std::unordered_set`。
+
+### ☕ Java 类比
+
+C++ 的 `std::set<T>` 对应 Java 的 `TreeSet<T>`：
+
+| 对比项 | C++ `std::set<T>` | Java `TreeSet<T>` |
+|--------|-------------------|-------------------|
+| 底层实现 | 红黑树 | 红黑树 |
+| 元素顺序 | 有序（升序） | 有序（自然顺序或 `Comparator`） |
+| 查找复杂度 | O(log n) | O(log n) |
+| 去重 | 自动 | 自动 |
+| 插入 | `s.insert(val)` | `s.add(val)` |
+| 查找 | `s.find(val)` / `s.count(val)` | `s.contains(val)` |
+| 删除 | `s.erase(val)` | `s.remove(val)` |
+
+**C++ set 示例：**
+
+```cpp
+std::set<tAPP_ID> doing_bg_conn;
+doing_bg_conn.insert(app_id);
+if (doing_bg_conn.count(app_id)) { /* 存在 */ }
+```
+
+**Java TreeSet 示例：**
+
+```java
+TreeSet<Integer> doingBgConn = new TreeSet<>();
+doingBgConn.add(appId);
+if (doingBgConn.contains(appId)) { /* 存在 */ }
+// 如果不需要排序，用 HashSet（O(1) 查找）
+```
+
+> **关键区别**：Java 默认推荐 `HashSet`（无序，O(1)），`TreeSet` 只在需要有序遍历时使用。C++ 中 `set`（有序）比 `unordered_set`（无序）更常用，因为 `unordered_set` 需要自定义哈希函数。
 
 ---
 
@@ -602,6 +771,36 @@ if (!cl_cmd_q_.empty()) {
 
 > 如果你需要频繁在头部删除元素，`deque` 比 `vector` 更合适。如果只在尾部操作，`vector` 通常更快（内存更连续，缓存更友好）。
 
+### ☕ Java 类比
+
+C++ 的 `std::deque<T>` 对应 Java 的 `ArrayDeque<T>`：
+
+| 对比项 | C++ `std::deque<T>` | Java `ArrayDeque<T>` |
+|--------|---------------------|----------------------|
+| 头部插入/删除 | O(1) | O(1) |
+| 尾部插入/删除 | O(1) | O(1) |
+| 随机访问 | O(1) | O(1) |
+| 头部添加 | `push_front()` / `emplace_front()` | `addFirst()` |
+| 尾部添加 | `push_back()` / `emplace_back()` | `addLast()` |
+| 头部删除 | `pop_front()` | `removeFirst()` |
+| 内存连续性 | 分段连续 | 连续数组（循环缓冲区） |
+
+**C++ deque 示例：**
+
+```cpp
+std::deque<tGATT_CMD_Q> cl_cmd_q;
+cl_cmd_q.push_back(new_cmd);     // 尾部添加
+cl_cmd_q.pop_front();            // 头部删除
+```
+
+**Java ArrayDeque 示例：**
+
+```java
+ArrayDeque<GattCommand> cmdQueue = new ArrayDeque<>();
+cmdQueue.addLast(newCmd);        // 尾部添加
+cmdQueue.removeFirst();          // 头部删除
+```
+
 ---
 
 ## 7. std::queue — 队列
@@ -682,6 +881,37 @@ void Handler::Run() {
 ### 7.4 小贴士
 
 > `std::queue` 是容器适配器，不是容器。它限制你只能从一端进、另一端出，保证了 FIFO 语义，防止你意外在中间插入或删除元素。
+
+### ☕ Java 类比
+
+C++ 的 `std::queue<T>` 对应 Java 的 `Queue<T>` 接口（通常用 `LinkedList` 或 `ArrayDeque` 实现）：
+
+| 对比项 | C++ `std::queue<T>` | Java `Queue<T>` |
+|--------|---------------------|-----------------|
+| 接口类型 | 容器适配器 | 接口（`java.util.Queue`） |
+| 常用实现 | 底层用 `deque` | `LinkedList`, `ArrayDeque` |
+| 入队 | `q.push(x)` | `q.offer(x)` |
+| 出队 | `q.pop()`（无返回值） | `q.poll()`（返回队首元素） |
+| 查看队首 | `q.front()` | `q.peek()` |
+| 大小 | `q.size()` | `q.size()` |
+| 可遍历 | 否 | 是（`Queue` 继承自 `Collection`） |
+
+**C++ queue 示例：**
+
+```cpp
+std::queue<OnceClosure> tasks;
+tasks.push(std::move(task));
+auto t = std::move(tasks.front());
+tasks.pop();
+```
+
+**Java Queue 示例：**
+
+```java
+Queue<Runnable> tasks = new LinkedList<>();
+tasks.offer(task);
+Runnable t = tasks.poll();  // 取出并移除队首
+```
 
 ---
 
@@ -785,6 +1015,41 @@ void Handler::ProcessDelayedTasks() {
 
 > `priority_queue` 默认是大顶堆。如果你需要小顶堆（最小的先出），用 `std::greater<>` 作为比较器，或者自定义比较器时用 `>` 而不是 `<`。
 
+### ☕ Java 类比
+
+C++ 的 `std::priority_queue<T>` 对应 Java 的 `PriorityQueue<T>`：
+
+| 对比项 | C++ `std::priority_queue<T>` | Java `PriorityQueue<T>` |
+|--------|----------------------------|------------------------|
+| 默认堆类型 | 大顶堆（最大先出） | 小顶堆（最小先出） |
+| 自定义比较器 | Lambda + `decltype` 作为模板参数 | `Comparator<T>` 作为构造参数 |
+| 获取堆顶 | `pq.top()` | `pq.peek()` |
+| 出队 | `pq.pop()`（无返回值） | `pq.poll()`（返回堆顶元素） |
+| 入队 | `pq.push(x)` / `pq.emplace(...)` | `pq.offer(x)` / `pq.add(x)` |
+| 底层容器 | 可指定（默认 `vector`） | 不可指定 |
+
+**C++ priority_queue 示例：**
+
+```cpp
+auto cmp = [](const DelayedTask& a, const DelayedTask& b) {
+    return a.first > b.first;
+};
+std::priority_queue<DelayedTask, std::vector<DelayedTask>, decltype(cmp)> pq(cmp);
+```
+
+**Java PriorityQueue 示例：**
+
+```java
+PriorityQueue<DelayedTask> pq = new PriorityQueue<>(
+    Comparator.comparing(DelayedTask::getDeadline)
+);
+pq.offer(new DelayedTask(deadline, task));
+DelayedTask top = pq.peek();
+DelayedTask next = pq.poll();
+```
+
+> **关键区别**：C++ 默认大顶堆，Java 默认小顶堆。C++ 需要将比较器类型作为模板参数，Java 只需在构造时传入 `Comparator`。Java 的 `poll()` 返回并移除堆顶元素，C++ 需要先 `top()` 再 `pop()`。
+
 ---
 
 ## 9. std::pair — 值对
@@ -864,6 +1129,38 @@ for (const std::pair<uint16_t, std::shared_ptr<EattChannel>> el : eatt_dev->eatt
 ### 9.5 小贴士
 
 > `pair` 主要用于 `map` 的元素和需要返回两个值的函数。如果你需要绑定三个或更多值，用 `std::tuple` 或自定义结构体。
+
+### ☕ Java 类比
+
+Java **没有**与 `std::pair` 直接等价的类。Java 开发者通常使用 `Map.Entry<K,V>` 或自定义类。
+
+| 对比项 | C++ `std::pair<A, B>` | Java |
+|--------|----------------------|------|
+| 标准库类 | `std::pair<A, B>` | 无直接等价 |
+| map 元素 | `std::pair<const Key, Value>` | `Map.Entry<K, V>` |
+| 访问成员 | `p.first` / `p.second` | `entry.getKey()` / `entry.getValue()` |
+| 结构化绑定 | `auto [k, v] = p;` (C++17) | `var k = entry.getKey(); var v = entry.getValue();` |
+| 替代方案 | — | `Map.entry(k, v)` (Java 9+)、自定义 record |
+
+**C++ pair 示例：**
+
+```cpp
+auto p = std::make_pair(42, "hello");
+auto [key, value] = p;  // C++17 结构化绑定
+```
+
+**Java 替代方案：**
+
+```java
+// 方式 1：Map.Entry
+var entry = Map.entry(42, "hello");
+int key = entry.getKey();
+String value = entry.getValue();
+
+// 方式 2：自定义 record（Java 16+）
+record Pair<A, B>(A first, B second) {}
+var p = new Pair<>(42, "hello");
+```
 
 ---
 
@@ -969,6 +1266,38 @@ if (config) {
 
 > 当函数可能"没有结果"时，优先用 `optional` 而不是返回指针或特殊值。它让意图更清晰，使用更安全。
 
+### ☕ Java 类比
+
+C++ 的 `std::optional<T>` 对应 Java 的 `Optional<T>`（Java 8+）：
+
+| 对比项 | C++ `std::optional<T>` | Java `Optional<T>` |
+|--------|------------------------|---------------------|
+| 检查有值 | `opt.has_value()` 或 `if (opt)` | `opt.isPresent()` |
+| 获取值 | `opt.value()` 或 `*opt` | `opt.get()` |
+| 获取值或默认 | `opt.value_or(default)` | `opt.orElse(default)` |
+| 无值时抛异常 | `bad_optional_access` | `NoSuchElementException` |
+| 函数式操作 | 无 | `map()`, `filter()`, `flatMap()`, `ifPresent()` |
+| 基本类型 | `std::optional<int>` | `OptionalInt`（不能用 `Optional<int>`） |
+| 推荐用作字段 | 可以 | 不推荐（仅用于返回值） |
+
+**C++ optional 示例：**
+
+```cpp
+std::optional<RawAddress> addr = RawAddress::FromString(str);
+if (addr) { connect(addr.value()); }
+else { auto a = addr.value_or(RawAddress::kEmpty); }
+```
+
+**Java Optional 示例：**
+
+```java
+Optional<RawAddress> addr = RawAddress.fromString(str);
+addr.ifPresent(this::connect);
+RawAddress a = addr.orElse(RawAddress.EMPTY);
+```
+
+> **关键区别**：Java 的 `Optional` 有丰富的函数式 API（`map`、`filter`、`ifPresent`），C++ 的 `std::optional` 更轻量。Java 社区不推荐 `Optional` 作为字段类型，C++ 没有这个限制。
+
 ---
 
 ## 11. std::variant — 类型安全的联合体 (C++17)
@@ -1073,6 +1402,46 @@ void set_volume(std::variant<RawAddress, int> target, uint8_t volume) {
 ### 11.5 小贴士
 
 > `variant` 适合"同一个概念，不同类型表示"的场景。使用 `std::visit` 是最安全的访问方式，编译器会检查你是否处理了所有可能的类型。
+
+### ☕ Java 类比
+
+Java **没有**与 `std::variant` 直接等价的机制。最接近的替代方案是密封类 + 模式匹配（Java 17+）：
+
+| 对比项 | C++ `std::variant<A, B>` | Java 替代方案 |
+|--------|--------------------------|--------------|
+| 类型安全联合体 | `std::variant<A, B>` | 密封类 + 模式匹配（Java 17+） |
+| 访问方式 | `std::get`, `std::visit` | `switch` 模式匹配 |
+| 内存开销 | 栈上，最大成员 + 标签 | 堆上（每个子类独立对象） |
+| 传统替代 | — | 继承体系 + `instanceof` |
+| 编译期检查所有类型 | `std::visit` 强制 | `switch` 密封类强制（Java 21+） |
+
+**C++ variant 示例：**
+
+```cpp
+std::variant<RawAddress, int> target;
+std::visit([](auto&& arg) {
+    using T = std::decay_t<decltype(arg)>;
+    if constexpr (std::is_same_v<T, RawAddress>) { setDeviceVolume(arg, vol); }
+    else if constexpr (std::is_same_v<T, int>) { setGroupVolume(arg, vol); }
+}, target);
+```
+
+**Java 密封类替代方案（Java 17+）：**
+
+```java
+sealed interface VolumeTarget permits DeviceTarget, GroupTarget {}
+record DeviceTarget(RawAddress address) implements VolumeTarget {}
+record GroupTarget(int groupId) implements VolumeTarget {}
+
+void setVolume(VolumeTarget target, int volume) {
+    switch (target) {
+        case DeviceTarget(var addr) -> setDeviceVolume(addr, volume);
+        case GroupTarget(var id)    -> setGroupVolume(id, volume);
+    }
+}
+```
+
+> **关键区别**：C++ `variant` 是值类型（栈上，零堆分配），Java 的密封类方案需要堆分配。Java 17+ 的密封类 + 模式匹配在语义上最接近 `variant`，编译器会检查所有子类型是否被处理。
 
 ---
 
@@ -1216,6 +1585,48 @@ std::sort(scan_results.begin(), scan_results.end(),
 ### 12.6 小贴士
 
 > 优先使用 STL 算法而不是手写循环。算法代码更简洁、更不容易出错，而且实现通常经过优化。
+
+### ☕ Java 类比
+
+C++ STL 算法对应 Java 的 Stream API 和 `Collections` 工具类：
+
+| C++ STL 算法 | Java Stream / Collections | 功能 |
+|-------------|--------------------------|------|
+| `std::find_if` | `.stream().filter().findFirst()` | 条件查找 |
+| `std::count_if` | `.stream().filter().count()` | 条件计数 |
+| `std::for_each` | `.forEach()` | 遍历执行 |
+| `std::sort` | `.stream().sorted()` / `Collections.sort()` | 排序 |
+| `std::min` / `std::max` | `Collections.min()` / `Collections.max()` | 取极值 |
+| `std::clamp` | `Math.min(Math.max(val, min), max)` | 值域夹紧 |
+| `std::transform` | `.stream().map()` | 变换元素 |
+| `std::copy_if` | `.stream().filter().collect()` | 条件拷贝 |
+| `std::any_of` | `.stream().anyMatch()` | 是否存在满足条件的 |
+| `std::all_of` | `.stream().allMatch()` | 是否全部满足 |
+| `std::remove_if` + `erase` | `.removeIf()` | 条件删除 |
+
+**C++ STL 算法示例：**
+
+```cpp
+auto it = std::find_if(devices.begin(), devices.end(),
+    [&bd_addr](const auto& dev) { return dev.bda_ == bd_addr; });
+size_t count = std::count_if(channels.begin(), channels.end(),
+    [](const auto& ch) { return ch.state_ == State::CONNECTING; });
+this->tx_mtu_ = std::clamp(tx_mtu, MIN_MTU, MAX_MTU);
+```
+
+**Java Stream API 示例：**
+
+```java
+var device = devices.stream()
+    .filter(dev -> dev.getBda().equals(bdAddr))
+    .findFirst();
+long count = channels.stream()
+    .filter(ch -> ch.getState() == State.CONNECTING)
+    .count();
+this.txMtu = Math.min(Math.max(txMtu, MIN_MTU), MAX_MTU);
+```
+
+> **关键区别**：C++ STL 算法直接操作迭代器（可修改原容器），Java Stream 生成新流（不修改原集合）。C++ 的 `std::sort` 是原地排序，Java 的 `.sorted()` 返回新 Stream。Java Stream 是惰性求值的，只有终端操作才触发计算。
 
 ---
 

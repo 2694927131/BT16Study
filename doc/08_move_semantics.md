@@ -77,6 +77,36 @@ std::string b = std::move(a);
 
 > **实践建议**：移动源对象后，不要再读取它的值，除非你给它赋了新值。
 
+### ☕ Java 类比
+
+Java **不需要移动语义**，因为 Java 有垃圾回收器（GC），对象的传递天然就是引用传递（零拷贝）。
+
+| 对比项 | C++ | Java |
+|--------|-----|------|
+| 对象传递方式 | 默认值拷贝（深拷贝），需移动语义优化 | 天然引用传递（零拷贝） |
+| 移动语义 | `std::move`，转移资源所有权 | 不需要（GC 管理对象生命周期） |
+| 深拷贝问题 | 存在（`string`、`vector` 等） | 不存在（赋值只是复制引用） |
+| 移动后源对象 | 有效但未指定 | 不适用（引用传递，无"移动"概念） |
+
+**C++ 拷贝 vs 移动：**
+
+```cpp
+std::string a = "Bluetooth";  // a 拥有内存
+std::string b = a;            // 拷贝：b 分配新内存，复制内容
+std::string c = std::move(a); // 移动：c 接管 a 的内存，a 变空
+```
+
+**Java 的等价操作：**
+
+```java
+String a = "Bluetooth";  // a 引用字符串对象
+String b = a;            // 只复制引用，不复制对象！零开销
+String c = a;            // 同上，a、b、c 指向同一个对象
+// 不需要 "移动"，因为 Java 从不深拷贝对象
+```
+
+> **为什么 Java 不需要移动语义？** Java 中所有对象都通过引用访问，赋值操作只复制引用（4/8 字节），不复制对象本身。GC 自动管理对象生命周期，当没有引用指向对象时自动回收。因此 Java 不存在 C++ 的"深拷贝开销"问题，也就不需要移动语义。
+
 ---
 
 ## 2. 左值与右值
@@ -131,6 +161,20 @@ int&& rr3 = std::move(x);  // ✅ std::move 把左值转为右值引用
 ```
 
 **右值引用的核心意义**：它让我们能"捕获"即将销毁的临时对象，从中"偷走"资源，而不是白白地复制一份再销毁。
+
+### ☕ Java 类比
+
+Java **没有**右值引用的概念，也不需要。
+
+| 对比项 | C++ | Java |
+|--------|-----|------|
+| 左值 | 有名字、可取地址的表达式 | 不区分（Java 所有对象都是引用） |
+| 右值 | 临时对象、字面量 | 不区分 |
+| 左值引用 `T&` | 绑定到左值 | 不适用（Java 引用天然是引用） |
+| 右值引用 `T&&` | 绑定到右值，移动语义核心 | 不适用 |
+| `const T&` | 可绑定左值和右值 | 不适用（Java 无 const 引用） |
+
+> **为什么 Java 不需要右值引用？** Java 的对象始终通过引用访问，不存在"值拷贝 vs 引用"的选择问题。C++ 引入右值引用是为了区分"可以偷走资源的临时对象"和"不能偷走资源的持久对象"，而 Java 的 GC 已经解决了资源管理问题。
 
 ---
 
@@ -215,6 +259,35 @@ static void alarm_closure_cb(void* p) {
 3. 执行后，`user_task` 变为空状态，确保不会被再次调用
 
 这种写法在编译期保证了"一次性"语义——如果你忘了 `std::move`，编译器会报错，因为 `OnceClosure::Run()` 只接受右值。
+
+### ☕ Java 类比
+
+Java **不需要** `std::move`，因为 Java 没有移动语义的需求。
+
+| 对比项 | C++ `std::move` | Java |
+|--------|------------------|------|
+| 作用 | 将左值转为右值引用，触发移动 | 不需要 |
+| 本质 | `static_cast<T&&>(t)` | 不适用 |
+| 使用场景 | 传递不再需要的对象、一次性回调 | 不适用 |
+| 移动后源对象 | 有效但未指定 | 不适用 |
+
+**C++ std::move 示例：**
+
+```cpp
+// 一次性回调：移动后原回调不可再使用
+btu_hcif_send_cmd_with_cb(HCI_LE_SET_CIG_PARAMS, param, params_len, std::move(cb));
+// cb 此后不可再使用
+```
+
+**Java 的等价写法：**
+
+```java
+// Java 没有移动语义，回调对象可以多次传递
+sendCommand(HCI_LE_SET_CIG_PARAMS, param, paramsLen, callback);
+// callback 仍然有效，但逻辑上只应调用一次（靠约定，不靠编译器强制）
+```
+
+> **关键区别**：C++ 的 `std::move` 在编译期强制"一次性"语义——`OnceClosure::Run()` 只能对右值调用。Java 无法在编译期强制这种约束，只能靠运行时检查或编程约定。
 
 ---
 
@@ -340,6 +413,43 @@ private:
 - 拷贝操作需要**手动实现**，因为 `list_map_` 内部有迭代器，迭代器不能直接拷贝
 - 这体现了一个重要规律：**移动通常比拷贝简单得多**
 
+### ☕ Java 类比
+
+Java **不需要**移动构造函数和移动赋值运算符，因为 Java 的对象传递天然是引用传递。
+
+| 对比项 | C++ | Java |
+|--------|-----|------|
+| 移动构造函数 | `T(T&& other)`，窃取资源 | 不需要（Java 无值语义） |
+| 移动赋值 | `T& operator=(T&& other)` | 不需要（Java 无运算符重载） |
+| 拷贝构造函数 | `T(const T& other)`，深拷贝 | 不常用（`clone()` 方法，需显式实现） |
+| `noexcept` | 移动操作应标记 | 不适用（Java 异常机制不同） |
+| vector 扩容策略 | 根据 `noexcept` 选择移动或拷贝 | 不适用（`ArrayList` 存储引用，扩容只复制引用） |
+
+**C++ 移动构造示例：**
+
+```cpp
+class Buffer {
+public:
+    Buffer(Buffer&& other) noexcept
+        : size_(other.size_), data_(other.data_) {
+        other.size_ = 0;
+        other.data_ = nullptr;  // 防止双重释放
+    }
+};
+```
+
+**Java 的等价操作：**
+
+```java
+// Java 不需要移动构造函数
+// 对象传递只复制引用，不存在深拷贝问题
+Buffer buf1 = new Buffer(1024);
+Buffer buf2 = buf1;  // 只复制引用，零开销
+// buf1 和 buf2 指向同一个对象，GC 统一管理
+```
+
+> **为什么 Java 不需要移动构造/赋值？** Java 的 `ArrayList` 等容器存储的是引用（4/8 字节），扩容时只需复制引用数组，不存在"深拷贝 vs 浅拷贝"的选择。C++ 容器直接存储对象值，扩容时需要决定是拷贝还是移动，因此需要 `noexcept` 来指导策略选择。
+
 ---
 
 ## 5. = delete 和 = default
@@ -439,6 +549,45 @@ private:
 **分析**：`tCONN_CB` 是 SDP（Service Discovery Protocol）的连接控制块，包含连接状态、定时器等。它只允许默认构造（初始化为默认状态），但禁止拷贝——因为每个连接控制块对应一个唯一的连接，不应该被复制。
 
 注意 `= delete` 被放在 `private` 区域。这是 C++11 的风格（在 `private` 中声明但不定义 = 禁止使用）。C++11 之后更推荐直接在 `public` 区域用 `= delete`，因为编译器能给出更清晰的错误信息。
+
+### ☕ Java 类比
+
+Java 通过访问控制和运行时异常来模拟 C++ 的 `= delete` 效果：
+
+| 对比项 | C++ `= delete` | Java 替代方案 |
+|--------|----------------|--------------|
+| 禁止拷贝 | `T(const T&) = delete;` | 不实现 `Cloneable`，或将 `clone()` 设为 `private` |
+| 禁止赋值 | `operator=(const T&) = delete;` | 不需要（Java 无赋值运算符重载） |
+| 编译期检测 | **是**（调用已删除函数 → 编译错误） | 否（运行时异常或访问控制） |
+| `= default` | 显式要求编译器生成默认实现 | 不需要（Java 自动提供默认构造） |
+
+**C++ = delete 示例：**
+
+```cpp
+class EattExtension {
+public:
+    EattExtension(const EattExtension&) = delete;           // 编译期禁止
+    EattExtension& operator=(const EattExtension&) = delete;
+};
+EattExtension copy = *inst;  // 编译错误！
+```
+
+**Java 替代方案：**
+
+```java
+class EattExtension {
+    // 禁止克隆
+    @Override
+    private Object clone() throws CloneNotSupportedException {
+        throw new CloneNotSupportedException("Singleton cannot be cloned");
+    }
+}
+// EattExtension copy = inst.clone();  // 编译错误（private）或运行时异常
+```
+
+> **关键区别**：C++ 的 `= delete` 是编译期强制，任何尝试调用都会直接编译失败。Java 的替代方案要么是访问控制（`private`，编译期），要么是运行时异常，不如 C++ 优雅和统一。
+
+---
 
 ### 5.4 Rule of Five / Rule of Zero
 
@@ -666,6 +815,20 @@ std::tuple<iterator, bool, std::optional<node_type>> try_emplace(const Key& key,
 
 注意最后一行 `std::move(evicted_node)`：这里用 `std::move` 而不是 `std::forward`，因为 `evicted_node` 是函数内的局部变量，我们确定要转移它，不需要保持原始值类别。
 
+### ☕ Java 类比
+
+Java **不需要**完美转发，因为 Java 的泛型使用类型擦除，不存在"左值/右值"区分。
+
+| 对比项 | C++ `std::forward` | Java |
+|--------|---------------------|------|
+| 完美转发 | `std::forward<T>(arg)` | 不需要 |
+| 万能引用 | `T&& arg` | 不适用 |
+| 引用折叠 | `& &&` → `&`，`&& &&` → `&&` | 不适用 |
+| 保持值类别 | 转发时保持左值/右值属性 | 不适用（Java 只有引用） |
+| 模板参数推导 | 推导为 `T&` 或 `T` | 类型擦除，统一为 `Object` |
+
+> **为什么 Java 不需要完美转发？** Java 的方法参数只有一种传递方式——引用传递。不存在"拷贝还是移动"的选择，因此不需要保持参数的"值类别"。Java 的泛型方法天然就是"完美转发"的——参数原样传递，无需额外处理。
+
 ---
 
 ## 7. 返回值优化 (RVO/NRVO)
@@ -728,6 +891,39 @@ static MutationEntry Set(PropertyType property_type, std::string section_param,
 ```
 
 **分析**：这里 `return` 的是构造函数调用（纯右值），C++17 保证不会发生拷贝。构造函数内部的参数用 `std::move` 是正确的——因为 `section_param` 等是函数参数（不是返回值），我们需要将它们移动到 `MutationEntry` 的成员中。
+
+### ☕ Java 类比
+
+Java **不需要** RVO/NRVO，因为 Java 的对象都在堆上，返回对象只返回引用。
+
+| 对比项 | C++ RVO/NRVO | Java |
+|--------|-------------|------|
+| 返回值优化 | 编译器消除返回值的拷贝/移动 | 不需要（返回引用，零开销） |
+| `return std::move(x)` | ❌ 可能阻止 NRVO | 不适用 |
+| `return x;` | ✅ 编译器优先 NRVO，不行则自动移动 | 返回引用，天然零开销 |
+| C++17 强制消除 | `return T(args);` 保证零拷贝 | 不适用 |
+
+**C++ RVO 示例：**
+
+```cpp
+std::string create_message() {
+    std::string msg = "Hello, BLE!";
+    return msg;  // NRVO：编译器直接在调用者栈上构造 msg
+}
+```
+
+**Java 的等价操作：**
+
+```java
+String createMessage() {
+    String msg = "Hello, BLE!";
+    return msg;  // 只返回引用，天然零开销
+}
+// Java 的对象始终在堆上，返回只是复制引用（4/8 字节）
+// 不存在 C++ 那样的"返回值拷贝"问题
+```
+
+> **为什么 Java 不需要 RVO？** Java 的方法返回对象时，只返回堆上对象的引用（4/8 字节），不存在"拷贝整个对象"的开销。C++ 的 RVO 是为了消除"在函数栈上构造对象，然后拷贝到调用者栈上"的开销，这个问题在 Java 中根本不存在。
 
 ---
 

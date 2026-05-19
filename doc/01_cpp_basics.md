@@ -132,6 +132,32 @@ eatt_device(const RawAddress& bd_addr, uint16_t mtu, uint16_t mps)
 
 **解读**：`collision` 表示"是否发生了冲突"，只有是/否两种状态，所以用 `bool` 最合适。
 
+### ☕ Java 类比
+
+| C++ 类型 | Java 对应 | 占用字节数 | 说明 |
+|---------|----------|-----------|------|
+| `uint8_t` | `byte` | 1 | Java 的 byte 是**有符号**的 (-128~127)，无等价无符号 byte |
+| `uint16_t` | `short` / `int` | 2/4 | Java 的 short 是有符号的；协议开发中常用 int 代替 |
+| `uint32_t` | `int` | 4 | Java 的 int 是有符号的 (-2^31 ~ 2^31-1) |
+| `uint64_t` | `long` | 8 | Java 的 long 是有符号的 |
+| `int8_t` | `byte` | 1 | Java 的 byte 恰好是有符号 8 位 |
+| `int16_t` | `short` | 2 | Java 的 short 恰好是有符号 16 位 |
+| `int32_t` | `int` | 4 | Java 的 int 恰好是有符号 32 位 |
+| `bool` | `boolean` | 1/1 | 语义相同 |
+
+**关键差异**：
+- Java **没有无符号整型**（unsigned），所有整型都是有符号的。如果需要无符号语义，必须用更大的类型（如用 `long` 代替 `uint32_t`）或使用 `Integer.toUnsignedLong()` 等方法
+- Java 的 `char` 是 16 位 Unicode，而 C++ 的 `char` 是 8 位
+- C++ 的固定宽度类型（`uint8_t` 等）精确匹配协议字段，Java 中通常直接用 `int` 或 `long`，牺牲了精确宽度但简化了代码
+
+```java
+// Java 中表示蓝牙 Channel ID（16位无符号）
+int cid = 0x0040;  // 用 int 代替 uint16_t，注意不要赋负值
+
+// Java 中表示 64 位事件掩码
+long eventMask = 0x3dbfffffffffffffL;  // 用 long 代替 uint64_t
+```
+
 ### 1.4 练习思考题
 
 1. 蓝牙设备地址（MAC 地址）是 48 位的，你觉得应该用什么类型来存储？`uint16_t`？`uint32_t`？还是其他方案？
@@ -400,6 +426,37 @@ constexpr Uuid(const UUID128Bit& val) : uu{val} {}  // 私有的 constexpr 构�
 
 这意味着 `Uuid::From128BitBE(...)` 可以在编译期就完成计算，不需要等到运行时，这对性能敏感的协议栈代码非常有价值。
 
+### ☕ Java 类比
+
+| C++ 关键字 | Java 对应 | 编译期求值 | 运行时不可变 | 用途 |
+|-----------|----------|----------|------------|------|
+| `const` | `final` | 不一定 | ✅ 是 | 运行时常量 |
+| `constexpr` | `static final`（基本类型） | ✅ 必须 | ✅ 是 | 编译期常量 |
+| `const` 成员函数 | ❌ 无等价 | — | — | Java 没有等价语法 |
+
+**对比代码**：
+
+```cpp
+// C++: const 变量
+const int kMaxConnections = 7;
+
+// C++: constexpr 变量（编译期常量）
+static constexpr size_t kNumBytes128 = 16;
+```
+
+```java
+// Java: final 变量（类似 const）
+final int kMaxConnections = 7;
+
+// Java: static final 基本类型（类似 constexpr，编译期内联）
+public static final int K_NUM_BYTES_128 = 16;
+```
+
+**关键差异**：
+- Java 的 `final` 只表示"不可重新赋值"，不区分编译期和运行时。对于 `static final` 的基本类型和字符串，编译器会做内联优化，效果类似 `constexpr`
+- C++ 的 `const` 成员函数（`void Foo() const`）在 Java 中**没有等价语法**。Java 的 `final` 不能修饰方法参数列表后的位置。Java 程序员只能通过**设计约定**（如将类设计为不可变类）来达到类似效果
+- C++ 的 `constexpr` 函数可以在编译期执行，Java 没有这个能力
+
 ### 3.4 练习思考题
 
 1. 为什么 `Controller` 类中几乎所有的 `Get...` 函数都是 `const` 的，但 `Reset()` 不是？
@@ -487,6 +544,33 @@ void Connect(const RawAddress& bd_addr);  // 只传递一个指针大小的地�
 - 基本类型（`int`、`uint16_t` 等）：直接传值，因为拷贝开销很小
 - 大对象（`RawAddress`、`std::string`、`std::vector` 等）：传 `const T&`，避免拷贝
 - 需要修改原对象：传 `T&`
+
+### ☕ Java 类比
+
+| 特性 | C++ 引用 `T&` | Java 引用 |
+|------|-------------|----------|
+| 语法 | 需要显式 `&` | 默认行为，无需额外语法 |
+| 可以为 null | ❌ 不可以（必须绑定到对象） | ✅ 可以为 `null` |
+| 可以重新指向 | ❌ 不可以 | ✅ 可以重新赋值 |
+| 传参避免拷贝 | `const T&` 显式声明 | 对象自动按引用传递 |
+| 基本类型传参 | 直接传值（`uint16_t`） | 直接传值（`int` 等） |
+
+**对比代码**：
+
+```cpp
+// C++: 引用需要显式声明，基本类型传值
+void Connect(const RawAddress& bd_addr, uint16_t cid);
+```
+
+```java
+// Java: 对象自动按引用传递，基本类型自动传值
+void connect(RawAddress bdAddr, int cid);  // RawAddress 自动按引用传递
+```
+
+**关键差异**：
+- Java 中**所有对象变量都是引用**，不需要像 C++ 那样显式写 `&`。Java 的引用更像 C++ 的指针（可以为 null、可以重新指向），但使用语法像 C++ 的引用（不需要 `*` 解引用）
+- Java 没有与 C++ `const T&` 等价的语法。Java 无法在参数层面声明"传入的对象不可修改"，只能通过将类设计为不可变类（immutable）来达到类似效果
+- C++ 的 `const T&` 既避免拷贝又禁止修改，是 C++ 独有的精妙设计，Java 没有直接对应
 
 ### 4.4 练习思考题
 
@@ -642,6 +726,41 @@ if (ptr != nullptr) // 检查非空
 - 如果一个对象**可能不存在**，用指针（配合 `nullptr` 检查）
 - 如果需要**在运行时改变指向**，用指针
 
+### ☕ Java 类比
+
+| 特性 | C++ 指针 `T*` | Java 引用 |
+|------|-------------|----------|
+| 可以为空 | ✅ `nullptr` | ✅ `null` |
+| 需要解引用 | ✅ `*p` 或 `p->` | ❌ 直接用 `.` |
+| 指针运算 | ✅ `p++` 等 | ❌ 不支持 |
+| 重新指向 | ✅ `p = &other` | ✅ `ref = other` |
+| 手动内存管理 | ✅ `new`/`delete` | ❌ 自动 GC |
+| 悬空指针风险 | ✅ 有 | ❌ GC 避免此问题 |
+
+**对比代码**：
+
+```cpp
+// C++: 指针需要手动管理、解引用、空指针检查
+EattChannel* channel = find_channel(cid);
+if (channel != nullptr) {
+    channel->EattChannelSetTxMTU(256);  // -> 访问成员
+}
+```
+
+```java
+// Java: 引用自动管理、直接访问、null 检查
+EattChannel channel = findChannel(cid);
+if (channel != null) {
+    channel.setTxMTU(256);  // 直接 . 访问成员
+}
+```
+
+**关键差异**：
+- Java **没有指针**，所有对象通过引用访问。Java 引用在语法上像 C++ 引用（用 `.` 不用 `->`），在语义上像 C++ 指针（可以为 null、可以重新指向）
+- Java 有**垃圾回收器（GC）**，不存在 `delete`，也不会出现悬空指针或内存泄漏（循环引用除外）。C++ 指针必须手动 `delete` 或使用智能指针
+- Java 不支持指针运算（如 `p++`），也不支持取地址（`&`），避免了 C++ 指针的许多危险操作
+- C++ 中用指针表示"可选"（可能为空）是常见模式，Java 中直接用引用 + `null` 检查即可
+
 ### 5.5 练习思考题
 
 1. `eatt_dev->eatt_tcb_` 中，`->` 和 `.` 有什么区别？什么情况下用哪个？
@@ -788,6 +907,62 @@ static void alarm_closure_cb(void* p) {  // 文件级 static，只在当前 .cc 
   delete data;
 }
 ```
+
+### ☕ Java 类比
+
+| 位置 | C++ `static` | Java `static` | 差异 |
+|------|-------------|--------------|------|
+| 类的静态成员变量 | `static constexpr size_t kNumBytes128 = 16;` | `public static final int K_NUM_BYTES_128 = 16;` | 语义相同 |
+| 类的静态成员函数 | `static Uuid From16Bit(uint16_t);` | `public static Uuid from16Bit(int);` | 语义相同 |
+| 函数内静态局部变量 | `static EattExtension* instance = ...;` | ❌ 无等价 | Java 需要用类级别的字段实现 |
+| 文件级静态（内部链接） | `static void alarm_closure_cb(...)` | ❌ 无等价 | Java 用 `private` 访问控制代替 |
+
+**对比代码——静态成员**：
+
+```cpp
+// C++: 静态成员变量和函数
+class Uuid final {
+public:
+    static constexpr size_t kNumBytes128 = 16;
+    static Uuid From16Bit(uint16_t uuid16bit);
+};
+// 访问：Uuid::kNumBytes128, Uuid::From16Bit(0x180F)
+```
+
+```java
+// Java: 静态成员变量和函数
+public final class Uuid {
+    public static final int K_NUM_BYTES_128 = 16;
+    public static Uuid from16Bit(int uuid16bit) { ... }
+}
+// 访问：Uuid.K_NUM_BYTES_128, Uuid.from16Bit(0x180F)
+```
+
+**对比代码——单例模式**：
+
+```cpp
+// C++: 函数内静态局部变量实现单例
+static EattExtension* GetInstance() {
+    static EattExtension* instance = new EattExtension();
+    return instance;
+}
+```
+
+```java
+// Java: 类级别静态字段实现单例
+private static EattExtension instance;
+public static EattExtension getInstance() {
+    if (instance == null) {
+        instance = new EattExtension();
+    }
+    return instance;
+}
+```
+
+**关键差异**：
+- Java **没有函数内的静态局部变量**。C++ 中 `static` 局部变量只初始化一次的特性，在 Java 中需要用类级别的 `static` 字段来模拟
+- C++ 的文件级 `static`（限制符号在当前编译单元可见）在 Java 中不存在，Java 用 `private` 或包访问权限来控制可见性
+- C++ 静态成员函数**没有 `this` 指针**，Java 的静态方法也**没有 `this` 引用**，两者一致
 
 ### 6.5 练习思考题
 
@@ -972,6 +1147,61 @@ struct VendorCapabilities {
 
 **解读**：纯数据结构，对应控制器厂商能力的各个字段，用 `struct` + 默认 `public` 非常合适。
 
+### ☕ Java 类比
+
+| 特性 | C++ `struct` | C++ `class` | Java |
+|------|------------|------------|------|
+| 默认访问权限 | `public` | `private` | — |
+| 可以有方法 | ✅ | ✅ | — |
+| Java 有 `struct` 吗 | — | — | ❌ **没有** |
+
+**关键差异**：
+- Java **没有 `struct` 关键字**，只有 `class`。所有数据载体在 Java 中都是 `class`
+- C++ 中 `struct` 和 `class` 功能几乎完全相同，区别仅在于默认访问权限。Java 中不存在这种区分
+- C++ 用 `struct` 表示"纯数据载体"的约定，在 Java 中通常用 **POJO（Plain Old Java Object）** 或 **Record 类（Java 16+）** 来表达
+
+**对比代码**：
+
+```cpp
+// C++: struct 作为纯数据载体
+struct closure_data {
+    base::OnceClosure user_task;
+};
+```
+
+```java
+// Java 方式1: 普通 class（类似 struct）
+public class ClosureData {
+    public Runnable userTask;  // 默认需要显式 public
+}
+
+// Java 方式2: Record 类（Java 16+，更接近 struct 的简洁性）
+public record ClosureData(Runnable userTask) {}
+```
+
+**对比代码——Pimpl 惯用法**：
+
+```cpp
+// C++: struct 前置声明用于 Pimpl
+class EattExtension {
+private:
+    struct impl;                    // 前置声明
+    std::unique_ptr<impl> pimpl_;   // 不透明指针
+};
+```
+
+```java
+// Java: 不需要 Pimpl！
+// Java 的类天然隔离了接口和实现：
+// - .java 源文件编译后只有 .class 字节码
+// - 使用者只能看到 public 成员
+// - 修改 private 成员不影响使用方（不需要重新编译）
+// 所以 Java 天然具有 C++ Pimpl 想要达到的效果
+public class EattExtension {
+    private Impl impl;  // 直接持有实现类，无需隐藏
+}
+```
+
 ### 7.4 练习思考题
 
 1. 如果把 `struct closure_data` 改成 `class closure_data`，代码还能编译吗？需要做什么修改？
@@ -1107,6 +1337,41 @@ void process(void* ptr);
 process(NULL);      // 调用 process(int)，可能不是你想要的！
 process(nullptr);   // 调用 process(void*)，明确无误
 ```
+
+### ☕ Java 类比
+
+| 特性 | C++ `nullptr` | C++ `NULL` | Java `null` |
+|------|-------------|-----------|------------|
+| 类型 | `std::nullptr_t`（专用类型） | `int` 0 或 `void*` 0 | `null`（专用字面量） |
+| 类型安全 | ✅ 只能转为指针类型 | ❌ 可能与 `int` 0 混淆 | ✅ 只能赋给引用类型 |
+| 函数重载安全 | ✅ 不会选错重载 | ❌ 可能选 `int` 版本 | ✅ 不会选错重载 |
+| 可用于基本类型 | ❌ | ⚠️ 可以但危险 | ❌ |
+
+**对比代码**：
+
+```cpp
+// C++: nullptr 和 NULL 的区别
+void process(int value);
+void process(void* ptr);
+
+process(NULL);      // 调用 process(int)！可能不是你想要的
+process(nullptr);   // 调用 process(void*)，明确无误
+```
+
+```java
+// Java: null 是类型安全的
+void process(int value) { }
+void process(Object ptr) { }
+
+process(0);         // 调用 process(int)，清晰
+process(null);      // 调用 process(Object)，清晰
+// process((int)null);  // 编译错误！null 不能转为基本类型
+```
+
+**关键差异**：
+- Java 的 `null` 天然是类型安全的，不存在 C++ `NULL` 那样与整数 0 混淆的问题
+- Java 的 `null` 只能赋给引用类型（对象），不能赋给基本类型（`int`、`boolean` 等），这比 C++ 更严格
+- C++ 需要 `nullptr` 来解决 `NULL` 的历史遗留问题，Java 从一开始就设计正确
 
 ### 8.6 练习思考题
 

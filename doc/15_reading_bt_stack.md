@@ -134,6 +134,35 @@ bool is_gd_stack_started_up() { return Stack::GetInstance()->IsRunning(); }
 | `main/shim/btm_api.cc` | BTM API 的 Shim 适配 |
 | `main/shim/le_scanning_manager.cc` | 扫描管理的 Shim 适配 |
 
+### ☕ Java 类比
+
+Android 蓝牙协议栈的代码架构与 Java Framework 层有直接对应关系：
+
+| C++ 层 | Java 层 | 说明 |
+|--------|---------|------|
+| `system/gd/` | `android.bluetooth.*` (AIDL/HIDL) | GD 新架构对应 Java 接口 |
+| `system/stack/` | 无直接对应（内部实现） | 传统协议栈，Java 层不可见 |
+| `system/btif/` | `com.android.bluetooth.*` | JNI 桥接层 |
+| `system/bta/` | Profile Service 类 | 蓝牙应用层 |
+| `system/gd/os/Handler` | `android.os.Handler` | 消息处理 |
+| `system/gd/os/Thread` | `android.os.HandlerThread` | 线程抽象 |
+| `system/types/RawAddress` | `android.bluetooth.BluetoothDevice` | 设备地址 |
+| `system/types/Uuid` | `java.util.UUID` | UUID 类型 |
+
+```
+Java Framework (android.bluetooth.BluetoothAdapter)
+    ↓ AIDL
+Bluetooth Service (com.android.bluetooth.btservice.AdapterService)
+    ↓ JNI
+btif 层 (system/btif/)
+    ↓
+Shim 层 (system/main/shim/) ←→ GD 架构 (system/gd/)
+    ↓
+HCI 层 → 控制器硬件
+```
+
+**关键洞察**：Java 开发者熟悉的 `BluetoothAdapter`、`BluetoothGatt` 等 API，最终都通过 JNI 调用到 C++ 协议栈。理解这个分层架构，就能知道 Java 层的 Bug 可能需要到 C++ 层排查。
+
 ---
 
 ## 2. 代码风格差异
@@ -317,6 +346,43 @@ struct eatt_impl {
 };
 ```
 
+### ☕ Java 类比
+
+C++ 协议栈的两种代码风格在 Java 中有直接对应：
+
+| C++ 风格 | Java 对应 | 说明 |
+|----------|----------|------|
+| GD 架构（现代 C++17） | Java 标准写法 | 面向对象、泛型、lambda |
+| 传统栈（C 风格） | 无直接对应 | Java 没有这种风格 |
+| `typedef struct { ... } tXXX;` | `class XXX { ... }` | Java 只有类 |
+| 函数指针回调 | 接口回调 / Lambda | Java 用接口替代 |
+| `#define` 常量 | `static final` 常量 | Java 用 `final` |
+| `void*` 参数 | 泛型 `<T>` | Java 用泛型保证类型安全 |
+| `NULL` | `null` | Java 统一用 `null` |
+| `std::unique_ptr<impl> pimpl_` | 接口 + 实现类分离 | Java 用接口隐藏实现 |
+
+```cpp
+// C++ 传统栈：C 风格
+typedef struct {
+  BD_NAME bd_name;
+  bool pin_type;
+} tBTM_CFG;
+
+#define BTM_PAIR_FLAGS_WE_STARTED_DD 0x01
+```
+
+```java
+// Java：面向对象风格
+public class BtmConfig {
+    private String bdName;
+    private boolean pinType;
+
+    public static final int PAIR_FLAGS_WE_STARTED_DD = 0x01;
+}
+```
+
+**关键洞察**：Java 开发者在阅读 GD 架构代码时会感到熟悉（面向对象、智能指针、lambda），但阅读传统栈代码时需要适应 C 风格的写法（函数指针、`void*`、全局变量）。
+
 ---
 
 ## 3. 如何阅读一个头文件
@@ -428,6 +494,49 @@ private 成员揭示了类的内部状态和数据结构：
 
 `EattExtension` 是 EATT 模块的单例管理类，提供 EATT 通道的创建、查找、重配置和销毁功能。它使用 Pimpl 惯用法隐藏实现细节，所有 public 方法都是虚函数（便于测试时 mock）。内部实现委托给 `eatt_impl` 结构体。
 
+### ☕ Java 类比
+
+C++ 的头文件阅读方法在 Java 中有对应，但 Java 的类结构更简单：
+
+| C++ 头文件阅读 | Java 类阅读 | 说明 |
+|---------------|------------|------|
+| 看类名和注释 | 看类名和 Javadoc | 相同 |
+| 看 public 方法 | 看 public 方法 | 相同 |
+| 看 private 成员 | 看 private 字段 | 相同 |
+| 看继承关系 | 看 `extends`/`implements` | Java 更明确 |
+| 看构造/析构函数 | 看构造函数 | Java 无析构函数 |
+| 看 `friend` 声明 | 无等价 | Java 无友元 |
+| 看 `= delete` | 无等价 | Java 引用赋值天然安全 |
+| 看 Pimpl (`unique_ptr<impl>`) | 看接口 + Impl 类 | Java 用接口隐藏实现 |
+| 头文件 `.h` + 实现文件 `.cc` | 一个 `.java` 文件 | Java 更简洁 |
+
+```cpp
+// C++：头文件声明 + Pimpl 隐藏实现
+class EattExtension {
+public:
+  virtual void Connect(const RawAddress& bd_addr);
+private:
+  struct impl;
+  std::unique_ptr<impl> pimpl_;  // 实现细节在 .cc 文件
+};
+```
+
+```java
+// Java：接口 + 实现类分离
+public interface EattExtension {
+    void connect(BluetoothDevice device);
+}
+
+public class EattExtensionImpl implements EattExtension {
+    @Override
+    public void connect(BluetoothDevice device) {
+        // 实现细节
+    }
+}
+```
+
+**关键差异**：C++ 的头文件/实现文件分离和 Pimpl 惯用法，在 Java 中通常用接口/实现类分离来替代。Java 开发者阅读 C++ 头文件时，可以将 `.h` 文件类比为 Java 的接口，将 `.cc` 文件类比为 Java 的实现类。
+
 ---
 
 ## 4. 如何跟踪函数调用链
@@ -520,6 +629,40 @@ grep -rn "void OnLeConnectSuccess.*override" system/
 - `btif` 层是 Java 和 C++ 之间的桥梁，所有 Java 调用都经过这里
 - `BTA` 层管理 Profile 状态机，是业务逻辑的核心
 - `stack` 层是协议实现，`gd/` 是正在替换的新实现
+
+### ☕ Java 类比
+
+从 Java 层到 C++ 协议栈的调用链是 Android 蓝牙开发的核心知识：
+
+| 调用层 | Java 侧 | C++ 侧 | 桥接方式 |
+|--------|---------|---------|---------|
+| Java API | `BluetoothGatt.connect()` | — | — |
+| JNI 层 | `sGattClientConnectNative()` | `btif_gattc_open_impl()` | JNI `native` 方法 |
+| btif 层 | — | `btif_gattc_open_impl()` | C 函数调用 |
+| BTA 层 | — | `BTA_GATTC_Open()` | C 函数调用 |
+| Stack 层 | — | `GATT_Connect()` → `BTM_CreateLeConnection()` | C 函数调用 |
+| Shim 层 | — | `shim::GetAclManagerLe()` | C++ 函数调用 |
+| GD 层 | — | `AclManagerLe::CreateLeConnection()` | C++ 方法调用 |
+| HAL 层 | — | `HciHal::sendHciCommand()` | C++ 方法调用 |
+
+```java
+// Java 层：BluetoothGatt.connect()
+public class BluetoothGatt {
+    public boolean connect() {
+        // 调用 JNI 层
+        mService.clientConnect(mClientIf, mDevice.getAddress(),
+                               mDevice.getType(), false);  // → AIDL
+    }
+}
+
+// JNI 层：com_android_bluetooth_gatt.cpp
+static void gattClientConnectNative(JNIEnv* env, jobject obj, ...) {
+    // 调用 btif 层
+    btif_gattc_open_impl(client_if, bdaddr, transport, initiating);  // → C++
+}
+```
+
+**关键洞察**：Java 开发者追踪 Bug 时，可以从 Java API 入手，通过 JNI 桥接追踪到 C++ 层。Android Studio 可以调试 Java 层，C++ 层需要用 GDB/LLDB。
 
 ---
 
@@ -659,6 +802,50 @@ RegisterDequeue(handler, cb)    ←→   Queue 有数据时通过 Reactor 唤醒
 - 这是因为传统 C 函数指针无法直接绑定到 C++ 成员函数
 - GD 架构通过 `base::Bind` 解决了这个问题
 
+### ☕ Java 类比
+
+C++ 协议栈的回调机制与 Java 的接口回调有直接对应：
+
+| C++ 回调机制 | Java 对应 | 说明 |
+|-------------|----------|------|
+| 函数指针 + `void*` | 接口回调 | Java 用接口替代函数指针 |
+| `tL2CAP_APPL_INFO` 结构体 | `L2capCallback` 接口 | Java 用接口封装回调组 |
+| `base::Callback` / `BindOnce` | Lambda / 方法引用 | Java 更简洁 |
+| `base::WeakPtr` | `WeakReference` | 防止 use-after-free |
+| `common::Unretained` | 直接引用 | Java 引用天然安全 |
+| 静态函数 + `GetInstance()` | 实例方法 | Java 直接用实例方法 |
+
+```cpp
+// C++：传统栈的函数指针回调
+reg_info_.pL2CA_CreditBasedConnectInd_Cb = eatt_connect_ind;
+// eatt_connect_ind 是静态函数，需要通过 GetInstance() 获取实例
+static void eatt_connect_ind(const RawAddress& bda, ...) {
+    GetImplInstance()->eatt_l2cap_connect_ind(bda, ...);
+}
+```
+
+```java
+// Java：接口回调
+public interface L2capCallback {
+    void onConnectInd(BluetoothDevice device, int[] lcids, int psm, int peerMtu);
+}
+
+// 注册回调
+l2capManager.registerCallback(new L2capCallback() {
+    @Override
+    public void onConnectInd(BluetoothDevice device, int[] lcids, ...) {
+        // 直接访问实例方法，无需 GetInstance()
+        handleConnectInd(device, lcids, ...);
+    }
+});
+
+// 或用 Lambda
+l2capManager.registerCallback((device, lcids, psm, peerMtu) ->
+    handleConnectInd(device, lcids, ...));
+```
+
+**关键差异**：C++ 的函数指针无法直接绑定到成员函数，需要通过静态函数 + `GetInstance()` 中转；Java 的接口回调和 Lambda 天然支持实例方法引用，代码更简洁。
+
 ---
 
 ## 6. 常用搜索模式
@@ -733,6 +920,35 @@ grep -rn "HCI_ROLE_CENTRAL" system/
 | 找宏定义 | `#define MACRO_NAME` | `#define EATT_MIN_MTU_MPS` |
 | 找全局变量 | `变量名.*=` | `bt_gatt_callbacks` |
 | 找头文件包含 | `#include.*filename` | `#include.*eatt.h` |
+
+### ☕ Java 类比
+
+C++ 的代码搜索模式在 Java 中有对应，但 Java IDE 的支持更强大：
+
+| C++ 搜索方式 | Java 对应 | 说明 |
+|-------------|----------|------|
+| `grep -rn "class EattExtension"` | IDE: Find Class | Java IDE 直接支持 |
+| `grep -rn "EattExtension::Connect"` | IDE: Go to Implementation | Ctrl+Click |
+| `grep -rn "RegisterXxxCallback"` | IDE: Find Usages | Shift+F12 |
+| `grep -rn "override"` | IDE: Go to Implementation | Ctrl+F12 |
+| `grep -rn "EATT_CHANNEL_OPENED"` | IDE: Find Usages | Alt+F7 |
+| grep（命令行） | IDE 搜索 / `jd-gui` | Java 更依赖 IDE |
+
+```bash
+# C++：grep 搜索函数定义
+grep -rn "EattExtension::Connect" system/
+grep -rn "class EattExtension" system/
+```
+
+```java
+// Java：IDE 直接导航
+// 1. Ctrl+Click 方法名 → 跳转到定义
+// 2. Ctrl+Alt+B → 跳转到接口的实现
+// 3. Alt+F7 → 查找所有使用位置
+// 4. Ctrl+Shift+F → 全局搜索
+```
+
+**关键差异**：C++ 项目中 grep 是最可靠的搜索方式（IDE 索引可能不完整），Java 项目中 IDE 的导航功能更强大。但在 Android 蓝牙这种跨语言项目中，grep 仍然是追踪 JNI 边界的必备工具。
 
 ---
 
@@ -944,6 +1160,44 @@ handler->Post(common::BindOnce(&MyClass::DoSomething, common::Unretained(this)))
 // → 写入 event fd → Reactor 被唤醒 → handle_next_event → 执行任务
 ```
 
+### ☕ Java 类比
+
+C++ 协议栈中的设计模式在 Java 中有直接对应：
+
+| C++ 设计模式 | Java 对应 | 说明 |
+|-------------|----------|------|
+| 单例 `GetInstance()` | `static getInstance()` | 相同模式 |
+| Pimpl `unique_ptr<impl>` | 接口 + Impl 类 | Java 用接口隐藏实现 |
+| 纯虚接口 `= 0` | `interface` | Java 接口更标准 |
+| 观察者 `ScanningCallback` | `Listener` / `Callback` 接口 | 相同模式 |
+| 状态机 `EattChannelState` | `enum` + `switch` | 相同模式 |
+| 生产者-消费者 `Queue<T>` | `BlockingQueue<T>` | Java 有标准实现 |
+| Reactor `epoll + Handler` | `Looper + Handler` | Android 核心机制 |
+| 桥接/Shim | `Adapter` / `Wrapper` 模式 | 相同模式 |
+| 弱引用 `WeakPtrFactory` | `WeakReference<T>` | 相同概念 |
+
+```cpp
+// C++：Pimpl 惯用法
+class EattExtension {
+private:
+  struct impl;
+  std::unique_ptr<impl> pimpl_;
+};
+```
+
+```java
+// Java：接口 + Impl 类
+public interface EattExtension {
+    void connect(BluetoothDevice device);
+}
+
+class EattExtensionImpl implements EattExtension {
+    // 实现细节
+}
+```
+
+**关键洞察**：设计模式是语言无关的。Java 开发者已经熟悉这些模式，只是 C++ 的实现方式不同（如 Pimpl vs 接口/Impl 分离）。理解了模式，就能快速理解 C++ 代码的意图。
+
 ---
 
 ## 8. 调试技巧
@@ -1051,6 +1305,41 @@ adb shell dumpsys bluetooth_manager bond
 # Profile 连接状态
 adb shell dumpsys bluetooth_manager profile
 ```
+
+### ☕ Java 类比
+
+C++ 协议栈的调试方法与 Java 层的调试有对应关系：
+
+| C++ 调试方式 | Java 对应 | 说明 |
+|-------------|----------|------|
+| `log::info("msg {}", val)` | `Log.i(TAG, "msg " + val)` | 日志输出 |
+| `LOG(INFO) << uuid` | `Log.i(TAG, uuid.toString())` | 格式化日志 |
+| GDB/LLDB 断点 | Android Studio 断点 | Java 层用 AS，C++ 层用 GDB |
+| `adb pull btsnoop_hci.log` | 同左 | HCI 日志跨语言通用 |
+| `adb shell dumpsys bluetooth_manager` | 同左 | dumpsys 跨语言通用 |
+| `static_assert` | 运行时 `assert` | C++ 编译期 vs Java 运行时 |
+| AddressSanitizer (ASan) | 无直接等价 | Java 有 GC 不会 use-after-free |
+
+```cpp
+// C++：GDB 断点调试
+break bluetooth::eatt::EattExtension::Connect
+break eatt_l2cap_connect_cfm
+continue
+```
+
+```java
+// Java：Android Studio 断点调试
+// 1. 在 EattExtension.connect() 设置断点
+// 2. Debug 模式运行应用
+// 3. 触发连接操作
+// 4. 查看变量值和调用栈
+```
+
+**关键差异**：
+- Java 层用 Android Studio 调试，C++ 层用 GDB/LLDB
+- HCI Snoop 日志和 `dumpsys` 是跨语言通用的调试工具
+- Java 的 GC 消除了 use-after-free 等内存错误，C++ 需要 ASan 检测
+- 跨 JNI 边界的 Bug 需要同时调试 Java 和 C++ 层
 
 ---
 
@@ -1163,6 +1452,43 @@ adb shell dumpsys bluetooth_manager profile
 | `stack/rfcomm/` | RFCOMM：串口仿真 |
 | `stack/sdp/` | SDP：服务发现协议 |
 | `stack/a2dp/` | A2DP：高级音频分发 |
+
+### ☕ Java 类比
+
+C++ 协议栈的学习路径与 Java 开发者的知识体系有对应关系：
+
+| 学习步骤 | C++ 协议栈 | Java 对应知识 | 说明 |
+|----------|-----------|-------------|------|
+| 1. 基础类型 | `RawAddress`, `Uuid` | `BluetoothDevice`, `UUID` | 直接对应 |
+| 2. OS 抽象 (osi) | `alarm_t`, `thread_t` | `Handler`, `HandlerThread` | 概念相同 |
+| 3. GD OS 抽象 | `Handler`, `Thread`, `Queue` | `Handler`, `Looper`, `BlockingQueue` | 几乎一一对应 |
+| 4. HCI 层 | `Controller`, `HciHal` | `BluetoothHci` AIDL | Java 层通过 AIDL 访问 |
+| 5. 协议实现 | `stack/eatt/`, `stack/gatt/` | `EattExtension`, `BluetoothGatt` | Java 层是接口，C++ 是实现 |
+
+**Java 开发者的推荐学习路径**：
+
+```
+第一步：从 Java 层入手
+  → 熟悉 android.bluetooth.* API
+  → 理解 BluetoothAdapter、BluetoothGatt 的用法
+
+第二步：追踪 JNI 边界
+  → 找到 Java native 方法对应的 C++ 实现
+  → 理解 btif 层的桥接作用
+
+第三步：深入 C++ 协议栈
+  → 从 types/ 开始（最简单）
+  → 逐步深入 gd/os/、gd/hci/、stack/
+
+第四步：理解回调链
+  → 从 Java 接口回调追踪到 C++ base::Callback
+  → 理解异步操作的完整生命周期
+
+第五步：实战调试
+  → 用 HCI Snoop 日志分析实际问题
+  → 用 dumpsys 查看协议栈状态
+  → 尝试在 C++ 层添加日志追踪 Bug
+```
 
 ---
 

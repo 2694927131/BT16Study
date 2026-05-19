@@ -43,6 +43,37 @@ std::is_integral_v<int>       // true，更简洁
 | **编译期防御** | 在编译期捕获类型错误，而非运行时崩溃 | `static_assert(std::is_trivial<Uuid>())` |
 | **泛型代码分发** | 在泛型函数中根据类型选择不同代码路径 | `if constexpr (std::is_same_v<T, ...>)` |
 
+### ☕ Java 类比
+
+Java **没有等价的 type_traits 机制**。Java 泛型使用类型擦除（Type Erasure），所有泛型信息在编译后被擦除为 `Object`，无法在编译期进行类型查询和分发：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `type_traits` 编译期类型检查 | ❌ 无等价 | Java 泛型是类型擦除 |
+| `is_integral_v<T>` | ❌ 无等价 | Java 无法在编译期判断泛型类型 |
+| `is_enum_v<T>` | ❌ 无等价 | 同上 |
+| `is_same_v<T, U>` | ❌ 无等价 | 同上 |
+| `is_base_of_v<Base, Derived>` | `Class.isAssignableFrom()` | Java 只能在运行时检查 |
+| `is_trivial<T>` | ❌ 无等价 | Java 无此概念 |
+| 编译期零开销 | 不适用 | Java 的类型检查只能在运行时 |
+
+```cpp
+// C++：编译期类型检查，零运行时开销
+if constexpr (std::is_integral_v<T>) {
+    return std::to_string(value);  // 仅对整数类型编译
+}
+```
+
+```java
+// Java：只能在运行时检查，有开销
+if (value instanceof Integer) {
+    return String.valueOf(value);  // 运行时类型检查
+}
+// 或者通过方法重载实现类似效果（但需要为每种类型写一个重载）
+```
+
+**Java 为什么不需要 type_traits**：Java 的泛型是类型擦除的，不支持编译期类型分发。Java 通过**方法重载**和**运行时类型检查**（`instanceof`、`Class.isAssignableFrom()`）实现类似效果，但无法做到 C++ 那样的零运行时开销。
+
 ---
 
 ## 2. 类型判断 traits
@@ -231,6 +262,55 @@ MutationEntry::Set(type, section, property, value)
 
 > **注意**：`bool` 也是整数类型，但 `is_same_v<T, bool>` 比 `is_integral_v<T>` 更精确，因此重载3 比重载1 优先匹配 `bool` 参数（更特化的模板优先）。
 
+### ☕ Java 类比
+
+C++ 的类型判断 traits 在 Java 中没有编译期等价，但可以通过方法重载实现类似效果：
+
+| C++ type_trait | Java 替代方案 | 说明 |
+|----------------|-------------|------|
+| `is_integral_v<T>` | 方法重载 `set(int)`, `set(long)` | Java 为每种整数类型写一个重载 |
+| `is_enum_v<T>` | 方法重载 + `Enum.ordinal()` | Java 枚举有 `ordinal()` 方法 |
+| `is_same_v<T, bool>` | 方法重载 `set(boolean)` | Java 有基本类型 `boolean` |
+| `is_same_v<T, string>` | 方法重载 `set(String)` | Java 有 `String` 类型 |
+| `is_base_of_v<Serializable, T>` | `instanceof Serializable` | Java 运行时检查 |
+| `is_specialization_of<T, vector>` | `instanceof List` | Java 运行时检查 |
+
+```cpp
+// C++：用 enable_if + type_traits 实现编译期类型分发
+template <typename T, typename enable_if<is_integral_v<T>, int>::type = 0>
+static MutationEntry Set(PropertyType type, string section, string property, T value) {
+    return Set(type, section, property, to_string(value));
+}
+```
+
+```java
+// Java：用方法重载实现类型分发（运行时解析）
+public class MutationEntry {
+    public static MutationEntry set(PropertyType type, String section,
+                                     String property, int value) {
+        return set(type, section, property, String.valueOf(value));
+    }
+    public static MutationEntry set(PropertyType type, String section,
+                                     String property, long value) {
+        return set(type, section, property, String.valueOf(value));
+    }
+    public static MutationEntry set(PropertyType type, String section,
+                                     String property, boolean value) {
+        return set(type, section, property, String.valueOf(value));
+    }
+    public static MutationEntry set(PropertyType type, String section,
+                                     String property, String value) {
+        // 直接使用字符串
+    }
+    public static MutationEntry set(PropertyType type, String section,
+                                     String property, Serializable value) {
+        return set(type, section, property, value.toLegacyConfigString());
+    }
+}
+```
+
+**关键差异**：C++ 用模板 + `enable_if` 实现编译期分发，一个模板函数覆盖所有整数类型；Java 必须为每种类型写一个重载方法，但代码更直观、更易理解。
+
 ---
 
 ## 3. 类型转换 traits
@@ -315,6 +395,43 @@ std::visit(
 ```
 
 > **为什么在 `std::visit` 中需要 `decay_t`？** 因为 `auto&&` 推导出的类型是引用类型（如 `const UpdateIRKCommand&`），而 `std::is_same_v` 对引用类型和值类型视为不同类型。使用 `decay_t` 可以得到干净的值类型，便于与目标类型比较。
+
+### ☕ Java 类比
+
+C++ 的类型转换 traits 在 Java 中大多不需要，因为 Java 的类型系统更简单：
+
+| C++ 类型转换 trait | Java 对应 | 说明 |
+|-------------------|----------|------|
+| `underlying_type_t<T>` | `Enum.ordinal()` / `Enum.getDeclaringClass()` | Java 枚举有运行时支持 |
+| `decay_t<T>` | ❌ 不需要 | Java 没有引用/值类型区分 |
+| `remove_cv_t<T>` | ❌ 不需要 | Java 没有 const/volatile |
+| `remove_reference_t<T>` | ❌ 不需要 | Java 没有引用引用 |
+| `add_const_t<T>` | `final` 关键字（不等价） | Java 用 `final` 而非 `const` |
+
+```cpp
+// C++：underlying_type_t 获取枚举底层类型
+using Underlying = std::underlying_type_t<AddressPolicy>;  // uint8_t
+return MutationEntry::Set<Underlying>(..., static_cast<Underlying>(value));
+```
+
+```java
+// Java：枚举天然支持 ordinal() 和 name()
+public enum AddressPolicy {
+    POLICY_NOT_SET, USE_PUBLIC_ADDRESS;
+}
+
+// 获取枚举的整数值
+int underlyingValue = AddressPolicy.POLICY_NOT_SET.ordinal();  // 0
+// 或者自定义值
+public enum AddressPolicy {
+    POLICY_NOT_SET(0), USE_PUBLIC_ADDRESS(1);
+    private final int value;
+    AddressPolicy(int value) { this.value = value; }
+    public int getValue() { return value; }
+}
+```
+
+**Java 不需要 `underlying_type_t` 的原因**：Java 的枚举是完整的类（继承自 `java.lang.Enum`），自带 `ordinal()`、`name()`、`getDeclaringClass()` 等方法。C++ 的枚举本质上是整数，需要 `underlying_type_t` 来获取其底层类型信息。
 
 ---
 
@@ -419,6 +536,39 @@ typename std::enable_if<条件, ReturnType>::type foo(T val);
 
 > **关键洞察**：这 6 个重载就像编译期的 `switch-case`，每个 `enable_if` 条件就是一个 `case` 分支。SFINAE 保证了不匹配的分支被自动排除。
 
+### ☕ Java 类比
+
+Java **没有 SFINAE / enable_if 机制**。Java 通过方法重载和泛型边界实现类似效果：
+
+| C++ 机制 | Java 替代方案 | 说明 |
+|----------|-------------|------|
+| `enable_if` + SFINAE | 方法重载 | Java 编译器自动选择最匹配的重载 |
+| 编译期类型分发 | 运行时 `instanceof` | Java 在运行时判断类型 |
+| 模板条件启用 | 泛型边界 `<T extends Xxx>` | Java 只能约束上界 |
+| 6 个模板重载 | 6 个具体类型重载 | Java 更冗长但更直观 |
+
+```cpp
+// C++：SFINAE 实现编译期类型分发
+template <typename T, typename enable_if<is_integral_v<T>, int>::type = 0>
+static MutationEntry Set(PropertyType type, string section, string property, T value);
+```
+
+```java
+// Java：方法重载实现类型分发（编译器在编译期选择正确的重载）
+public static MutationEntry set(PropertyType type, String section,
+                                 String property, int value) { ... }
+public static MutationEntry set(PropertyType type, String section,
+                                 String property, long value) { ... }
+public static MutationEntry set(PropertyType type, String section,
+                                 String property, boolean value) { ... }
+public static MutationEntry set(PropertyType type, String section,
+                                 String property, String value) { ... }
+public static MutationEntry set(PropertyType type, String section,
+                                 String property, Serializable value) { ... }
+```
+
+**Java 为什么不需要 SFINAE**：Java 的方法重载在编译期由编译器自动选择最匹配的方法，不需要"替换失败"机制。Java 的泛型不支持条件启用，但方法重载提供了更直观的类型分发方式。
+
 ---
 
 ## 5. if constexpr (C++17)
@@ -514,6 +664,42 @@ std::visit(
 ```
 
 > **技巧**：`static_assert(!sizeof(T*), "non-exhaustive visitor!")` 是一种惯用写法。`sizeof(T*)` 永远不为 0（指针大小至少 1 字节），所以 `!sizeof(T*)` 永远为 `false`。由于它在 `else` 分支中，只有当新增了未处理的 variant 类型时才会触发，起到编译期"穷举检查"的作用。
+
+### ☕ Java 类比
+
+Java **没有 `if constexpr` 机制**。Java 的 `if` 语句所有分支都会被编译，无法在编译期丢弃分支：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `if constexpr` | ❌ 无等价 | Java 的 `if` 所有分支都编译 |
+| 编译期丢弃未选中分支 | 不适用 | Java 无法做到 |
+| `std::visit` + `if constexpr` | `switch` 语句 + `enum` | Java 用 switch 匹配枚举 |
+| 编译期穷举检查 | `switch` 缺少 `default` 时编译器警告 | Java 编译器可检查枚举穷举 |
+
+```cpp
+// C++：if constexpr + std::visit
+std::visit([](auto&& data) {
+    using T = std::decay_t<decltype(data)>;
+    if constexpr (std::is_same_v<T, DataAsPeripheral>) {
+        return data.advertising_set_id;
+    } else {
+        return std::optional<uint8_t>{};
+    }
+}, roleData);
+```
+
+```java
+// Java：switch + enum（编译器可检查穷举）
+public Optional<Integer> getAdvertisingSetId(RoleData data) {
+    return switch (data.getType()) {
+        case PERIPHERAL -> Optional.of(((PeripheralData) data).advertisingSetId);
+        case CENTRAL -> Optional.empty();
+        // 编译器会检查是否穷举了所有枚举值
+    };
+}
+```
+
+**Java 为什么不需要 `if constexpr`**：Java 的泛型是类型擦除的，不存在"模板实例化"的概念，因此不需要编译期分支丢弃。Java 通过 `switch` + 枚举实现类型安全的分支分发，且编译器可以检查穷举性。
 
 ---
 
@@ -613,8 +799,40 @@ struct hash<ConnectAddressWithType> {
                                            sizeof(bluetooth::hci::FilterAcceptListAddressType)));
         // ...
     }
-};
 ```
+
+### ☕ Java 类比
+
+Java **没有 `static_assert` 机制**。Java 无法在编译期检查类型属性或大小约束：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `static_assert(condition, msg)` | ❌ 无等价 | Java 无编译期断言 |
+| `static_assert(sizeof(T) == 6)` | ❌ 无等价 | Java 无法检查对象大小 |
+| `static_assert(is_trivial<T>())` | ❌ 无等价 | Java 无平凡类型概念 |
+| `assert(condition)` | `assert condition : msg` | Java 运行时断言 |
+| 编译期防御 | 运行时检查 + 单元测试 | Java 依赖测试保证正确性 |
+
+```cpp
+// C++：编译期断言，错误在编译时发现
+static_assert(sizeof(RawAddress) == 6, "RawAddress must be 6 bytes long!");
+static_assert(std::is_trivial<Uuid>(), "Uuid must be trivial!");
+```
+
+```java
+// Java：无法在编译期检查对象大小或类型属性
+// 只能在运行时通过测试验证
+@Test
+public void testRawAddressSize() {
+    // Java 无法直接检查对象内存大小
+    // 但可以通过序列化大小间接验证
+    RawAddress addr = new RawAddress();
+    byte[] bytes = addr.toBytes();
+    assertEquals(6, bytes.length);
+}
+```
+
+**Java 为什么不需要 `static_assert`**：Java 运行在 JVM 上，对象的大小和内存布局由 JVM 管理，开发者无法也不需要控制。Java 通过运行时检查和单元测试来保证正确性，而非编译期断言。
 
 ---
 
@@ -685,6 +903,41 @@ static MutationEntry Set(PropertyType property_type, std::string section_param,
 2. `std::is_base_of_v<Serializable<typename T::value_type>, typename T::value_type>`：vector 的元素类型必须继承自 `Serializable`
 
 只有同时满足这两个条件（如 `std::vector<Device>`，其中 `Device` 继承自 `Serializable<Device>`），这个重载才会被选中。
+
+### ☕ Java 类比
+
+Java **没有自定义 type traits 的机制**，但可以通过运行时类型检查实现类似效果：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `is_specialization_of<T, vector>` | `obj instanceof List<?>` | Java 运行时检查 |
+| 自定义 trait（偏特化） | ❌ 无等价 | Java 泛型不支持偏特化 |
+| 编译期模板匹配 | 运行时 `instanceof` | Java 只能在运行时判断 |
+
+```cpp
+// C++：自定义 is_specialization_of trait
+template <typename T, template <typename...> class TemplateType>
+struct is_specialization_of : std::false_type {};
+
+template <template <typename...> class TemplateType, typename... Args>
+struct is_specialization_of<TemplateType<Args...>, TemplateType> : std::true_type {};
+```
+
+```java
+// Java：运行时检查是否是 List 类型
+public static <T> MutationEntry set(PropertyType type, String section,
+                                     String property, T value) {
+    if (value instanceof List<?>) {
+        List<?> list = (List<?>) value;
+        if (!list.isEmpty() && list.get(0) instanceof Serializable) {
+            // 处理 List<Serializable> 的情况
+        }
+    }
+    // ...
+}
+```
+
+**Java 为什么不需要自定义 traits**：Java 的泛型是类型擦除的，无法在编译期进行模板匹配。Java 通过 `instanceof` 和反射在运行时检查类型，虽然牺牲了编译期安全性，但代码更简单。
 
 ---
 

@@ -240,6 +240,44 @@ virtual ~Controller() = default;
 
 这里 `Controller` 的默认构造函数和虚析构函数都用了 `= default`，表示使用编译器生成的默认实现。
 
+### ☕ Java 类比
+
+| 特性 | C++ | Java |
+|------|-----|------|
+| 构造函数语法 | 类名(参数) | 类名(参数) |
+| 初始化列表 | `: member_(value)` | ❌ 无等价 |
+| `= default` | ✅ | ❌ 无等价（Java 自动生成默认构造函数） |
+| `= delete` | ✅ 禁止拷贝构造 | ❌ 无等价（Java 不支持拷贝构造） |
+
+**对比代码——初始化列表**：
+
+```cpp
+// C++: 成员初始化列表
+EattChannel(RawAddress& bda, uint16_t cid, uint16_t tx_mtu, uint16_t rx_mtu)
+    : bda_(bda),              // 初始化列表
+      cid_(cid),
+      rx_mtu_(rx_mtu),
+      state_(EATT_CHANNEL_PENDING) {
+  EattChannelSetTxMTU(tx_mtu);  // 函数体内额外逻辑
+}
+```
+
+```java
+// Java: 直接在构造函数体内赋值（没有初始化列表）
+public EattChannel(RawAddress bda, int cid, int txMtu, int rxMtu) {
+    this.bda = bda;           // 直接赋值
+    this.cid = cid;
+    this.rxMtu = rxMtu;
+    this.state = EattChannelState.PENDING;
+    setTxMTU(txMtu);          // 函数体内额外逻辑
+}
+```
+
+**关键差异**：
+- Java **没有成员初始化列表**。所有成员变量都在构造函数体内赋值。Java 不存在 C++ 中"先默认构造再赋值"的效率问题，因为 Java 的对象都是引用，赋值只是复制引用
+- Java 中如果没写任何构造函数，编译器自动生成默认构造函数；如果写了带参构造函数，默认构造函数**不会**自动生成——这与 C++ 行为一致
+- C++ 的 `= default` 和 `= delete` 在 Java 中没有等价语法。Java 不支持拷贝构造函数（对象赋值是引用赋值），也不需要显式删除
+
 ---
 
 ## 3. 析构函数
@@ -321,6 +359,47 @@ virtual ~Controller() = default;
 | `virtual ~EattExtension()` | 会被继承的接口类 | eatt.h:115 |
 | `virtual ~Controller() = default` | 会被继承的接口类 | controller.h:36 |
 
+### ☕ Java 类比
+
+| 特性 | C++ 析构函数 | Java |
+|------|------------|------|
+| 语法 | `~ClassName()` | `protected void finalize()`（已废弃） |
+| 调用时机 | 对象销毁时**确定**调用 | GC 回收时**不确定**是否调用 |
+| RAII | ✅ 核心资源管理模式 | ❌ 无等价 |
+| 替代方案 | — | `try-with-resources` + `AutoCloseable` |
+| 虚析构函数 | `virtual ~ClassName()` | ❌ 不需要（GC 管理） |
+
+**对比代码——RAII vs try-with-resources**：
+
+```cpp
+// C++: RAII —— 析构函数自动释放资源
+{
+    EattChannel channel(bda, cid, tx_mtu, rx_mtu);
+    // 使用 channel...
+    // 离开作用域，~EattChannel() 自动调用，释放定时器
+}  // ← 自动清理，无需手动操作
+```
+
+```java
+// Java: try-with-resources —— 实现 AutoCloseable 接口
+try (EattChannel channel = new EattChannel(bda, cid, txMtu, rxMtu)) {
+    // 使用 channel...
+}  // ← channel.close() 自动调用
+
+// 或者手动管理（不推荐）
+EattChannel channel = new EattChannel(bda, cid, txMtu, rxMtu);
+try {
+    // 使用 channel...
+} finally {
+    channel.close();  // 必须手动关闭
+}
+```
+
+**关键差异**：
+- Java **没有析构函数**。`finalize()` 方法在 Java 9 中已被标记为废弃，因为它的调用时机不可预测
+- C++ 的 **RAII（Resource Acquisition Is Initialization）** 是 C++ 最重要的资源管理模式：资源获取在构造函数中，释放 在析构函数中，确保资源不会泄漏。Java 没有等价机制，需要用 `try-with-resources` + `AutoCloseable` 接口来手动管理
+- C++ 需要**虚析构函数**是因为通过基类指针 `delete` 派生类对象时，必须正确调用派生类的析构函数。Java 有 GC，不需要手动 `delete`，所以不存在这个问题
+
 ---
 
 ## 4. this 指针
@@ -379,6 +458,38 @@ eatt_device* eatt_dev = this->find_device_by_address(bda);
 | 调用自己的成员函数 | ❌ 可省略 |
 | 链式调用返回自身 `return *this;` | ✅ 必须 |
 | 将自身传给其他函数 | ✅ 必须 |
+
+### ☕ Java 类比
+
+| 特性 | C++ `this` | Java `this` |
+|------|-----------|------------|
+| 类型 | 指针（`ClassName*`） | 引用（`ClassName`） |
+| 访问成员 | `this->member` | `this.member` |
+| 解引用 | `*this` 返回对象本身 | `this` 本身就是对象引用 |
+| 可以为 null | ❌ 不可能 | ❌ 不可能 |
+
+**对比代码**：
+
+```cpp
+// C++: this 是指针，用 -> 访问成员
+void EattChannelSetTxMTU(uint16_t tx_mtu) {
+    this->tx_mtu_ = std::min<uint16_t>(tx_mtu, EATT_MAX_TX_MTU);
+}
+// 返回自身：return *this;
+```
+
+```java
+// Java: this 是引用，用 . 访问成员
+public void setTxMTU(int txMtu) {
+    this.txMtu = Math.min(txMtu, EATT_MAX_TX_MTU);
+}
+// 返回自身：return this;
+```
+
+**关键差异**：
+- C++ 的 `this` 是**指针**，需要用 `->` 访问成员或 `*this` 解引用。Java 的 `this` 是**引用**，直接用 `.` 访问成员
+- 两者都不能为 null，都指向调用方法的当前对象
+- 用法场景完全一致：区分参数和成员变量同名、链式调用返回自身、将自身传给其他函数
 
 ---
 
@@ -467,6 +578,60 @@ virtual void Dump(int /*fd*/) const {}
 |---------|---------------|------------------|
 | 普通成员函数 | ✅ 能 | ❌ 不能 |
 | const 成员函数 | ❌ 不能 | ✅ 能 |
+
+### ☕ Java 类比
+
+| 特性 | C++ `const` 成员函数 | Java |
+|------|-------------------|------|
+| 语法 | `void Foo() const;` | ❌ **无等价语法** |
+| 编译器强制检查 | ✅ 修改成员变量编译报错 | ❌ 无此机制 |
+| const 对象限制 | 只能调用 const 成员函数 | ❌ 无此概念 |
+
+**Java 为什么不需要 const 成员函数？**
+
+Java 没有与 C++ `const` 成员函数等价的语法。Java 程序员通过以下方式替代：
+
+1. **不可变类设计**：将类设计为不可变（所有字段 `private final`，无 setter 方法），如 Java 的 `String` 类
+2. **防御性拷贝**：返回可变字段时返回副本，而不是原对象
+3. **接口约束**：通过只读接口（只有 getter 的接口）来限制修改
+
+```cpp
+// C++: const 成员函数，编译器强制保证不修改对象
+class Uuid final {
+public:
+    bool IsEmpty() const;      // 承诺不修改对象
+    uint16_t As16Bit() const;  // 承诺不修改对象
+    void SetData(...);         // 非 const，可能修改对象
+};
+
+const Uuid uuid = Uuid::From16Bit(0x180F);
+uuid.IsEmpty();    // ✅ 可以调用 const 函数
+// uuid.SetData(); // ❌ 编译错误！const 对象不能调用非 const 函数
+```
+
+```java
+// Java: 没有语法约束，只能通过设计约定
+public final class Uuid {
+    public boolean isEmpty() { ... }       // 无法声明"不修改对象"
+    public int as16Bit() { ... }           // 无法声明"不修改对象"
+    public void setData(...) { ... }       // 无法区分"只读"和"修改"方法
+}
+
+// 替代方案：提供只读接口
+public interface ReadOnlyUuid {
+    boolean isEmpty();
+    int as16Bit();
+    // 没有 setData()
+}
+public final class Uuid implements ReadOnlyUuid {
+    // ...
+}
+```
+
+**关键差异**：
+- C++ 的 `const` 成员函数是**编译器强制执行**的约束，Java 只能通过**设计模式**来模拟
+- C++ 中 `const` 对象只能调用 `const` 成员函数，Java 没有这种限制
+- 这是 C++ 在类型安全方面优于 Java 的一个重要特性
 
 ---
 
@@ -602,6 +767,43 @@ eatt->Connect(device_address);
 | 普通成员变量 | 无 | 对象 | `对象.变量名` |
 | 普通成员函数 | 无 | 对象 | `对象.函数名()` |
 
+### ☕ Java 类比
+
+| 特性 | C++ `static` 成员 | Java `static` 成员 |
+|------|------------------|-------------------|
+| 静态成员变量 | `static constexpr size_t kNumBytes128 = 16;` | `public static final int K_NUM_BYTES_128 = 16;` |
+| 静态成员函数 | `static Uuid From16Bit(uint16_t);` | `public static Uuid from16Bit(int);` |
+| 访问方式 | `类名::成员` | `类名.成员` |
+| 静态方法中访问实例成员 | ❌ 不可以（无 `this`） | ❌ 不可以（无 `this`） |
+
+**对比代码**：
+
+```cpp
+// C++: static 成员
+class Uuid final {
+public:
+    static constexpr size_t kNumBytes128 = 16;  // 类内初始化
+    static const Uuid kEmpty;                     // 类内声明，类外定义
+    static Uuid From16Bit(uint16_t uuid16bit);   // 静态工厂函数
+};
+// 访问：Uuid::kNumBytes128, Uuid::From16Bit(0x180F)
+```
+
+```java
+// Java: static 成员
+public final class Uuid {
+    public static final int K_NUM_BYTES_128 = 16;  // 直接初始化
+    public static final Uuid K_EMPTY = new Uuid();  // 直接创建
+    public static Uuid from16Bit(int uuid16bit) { ... }  // 静态工厂方法
+}
+// 访问：Uuid.K_NUM_BYTES_128, Uuid.from16Bit(0x180F)
+```
+
+**关键差异**：
+- C++ 的 `static` 成员变量通常需要在**类外定义**（除了 `static constexpr` 整型可以在类内初始化），Java 的 `static` 成员可以直接在类内初始化
+- 访问语法不同：C++ 用 `::`，Java 用 `.`
+- 语义完全一致：都属于类而非对象，所有实例共享，静态方法没有 `this`
+
 ---
 
 ## 7. final 关键字
@@ -654,6 +856,45 @@ class RawAddress final {
 | `Controller` | ❌ 否 | ✅ 有 | 接口类，需要被继承 |
 
 **规律**：有 `virtual` 函数的类通常不应该是 `final`，因为虚函数的目的就是让子类重写。
+
+### ☕ Java 类比
+
+| 特性 | C++ `final` | Java `final` |
+|------|-----------|------------|
+| 禁止类被继承 | `class Uuid final { };` | `public final class Uuid { }` |
+| 禁止方法被重写 | `void foo() final;` | `public final void foo() { }` |
+| 修饰变量 | ❌ 不用 `final`（用 `const`） | `final int x = 10;`（不可重新赋值） |
+
+**对比代码**：
+
+```cpp
+// C++: final 放在类名后面
+class Uuid final {       // 禁止继承
+    // ...
+};
+
+// C++: final 放在成员函数声明后
+class Base {
+    virtual void foo() final;  // 禁止子类重写此虚函数
+};
+```
+
+```java
+// Java: final 放在 class 关键字前面
+public final class Uuid {  // 禁止继承
+    // ...
+}
+
+// Java: final 放在方法返回类型前面
+public class Base {
+    public final void foo() { }  // 禁止子类重写此方法
+}
+```
+
+**关键差异**：
+- C++ 的 `final` 放在**类名后面**或**函数声明末尾**，Java 的 `final` 放在**`class`/返回类型前面**
+- Java 的 `final` 用途更广：还能修饰变量（不可重新赋值）、方法参数（方法内不可修改）。C++ 的 `final` 只用于类和虚函数
+- C++ 中禁止变量重新赋值用 `const`，Java 中用 `final`——同一个关键字在两种语言中含义不同
 
 ---
 
@@ -729,6 +970,43 @@ inline void BDADDR_TO_STREAM(uint8_t*& p, const RawAddress& a) {
 | 函数体在 .cpp 文件中 | 不需要 `inline`（加了也没用） |
 | 函数很长（超过 10 行） | 不建议内联 |
 | 函数很短（1-3 行） | 建议内联 |
+
+### ☕ Java 类比
+
+| 特性 | C++ `inline` | Java |
+|------|-------------|------|
+| `inline` 关键字 | ✅ 显式声明 | ❌ **没有 `inline` 关键字** |
+| 类内定义自动内联 | ✅ 函数体在类内则自动 inline | ❌ 无此概念 |
+| 内联决策 | 程序员建议 + 编译器决定 | **JIT 编译器自动决定** |
+
+**Java 为什么不需要 `inline` 关键字？**
+
+- Java 的 **JIT（Just-In-Time）编译器**会在运行时自动将频繁调用的短方法内联，不需要程序员手动标记
+- Java 没有"头文件/源文件分离"的问题，不存在 C++ 中 `inline` 避免多重定义的需求
+- C++ 的 `inline` 除了性能提示外，还有**链接语义**：允许同一函数在多个编译单元中定义而不报重复定义错误。Java 没有这种编译模型
+
+```cpp
+// C++: 显式 inline，避免头文件多重定义
+inline void BDADDR_TO_STREAM(uint8_t*& p, const RawAddress& a) {
+    for (int ijk = 0; ijk < BD_ADDR_LEN; ijk++) {
+        *(p)++ = a.address[BD_ADDR_LEN - 1 - ijk];
+    }
+}
+```
+
+```java
+// Java: 不需要 inline，JIT 自动优化
+public static void bdaddrToStream(byte[] p, RawAddress a) {
+    for (int i = 0; i < BD_ADDR_LEN; i++) {
+        p[i] = a.address[BD_ADDR_LEN - 1 - i];
+    }
+}
+```
+
+**关键差异**：
+- C++ 的 `inline` 是**编译期**优化提示，Java 的方法内联是 **JIT 运行期**自动优化
+- C++ 程序员需要关心 `inline` 的放置位置（头文件 vs 源文件），Java 程序员完全不需要
+- Java 的 JIT 内联甚至比 C++ 的 `inline` 更智能：它可以根据运行时 profiling 数据决定是否内联
 
 ---
 

@@ -101,7 +101,84 @@
 | 14 | 04 | 模板与泛型编程 | 模板类/SFINAE/CRTP |
 | 15 | 15 | 如何阅读与导航蓝牙协议栈代码 | 整体架构、代码风格、调试技巧 |
 
-### 快速上手路径（推荐按顺序学习，按此顺序可最快上手协议栈代码：
+### 快速上手路径
+推荐按顺序学习，按此顺序可最快上手协议栈代码：
 ```
 01→02→03→05→06→07→09→14→15→12→13→04→08→10→11
 ```
+
+---
+
+## 文档质量标准（V2）
+
+### 基本要求
+1. **真实代码示例**：每个C++语法点必须有来自蓝牙协议栈的真实代码示例，标注来源文件和行号
+2. **通俗易懂**：讲解语言适合C++初学者，避免过度学术化
+3. **结构清晰**：每个文档有目录、章节标题、代码块、总结
+4. **练习思考题**：每个主要章节末尾附思考题
+
+### Java 类比要求（V2新增）
+5. **Java类比讲解**：每个C++语法点必须附带Java类比对照，帮助有Java基础的开发者快速理解：
+   - 在每个主要语法点下添加 `☕ Java 类比` 小节
+   - 格式：用对比表格或并列代码块展示C++与Java的异同
+   - 重点说明：C++有而Java没有的特性（如指针、多继承、运算符重载等）
+   - 重点说明：Java有而C++用法不同的特性（如接口vs纯虚类、泛型vs模板等）
+   - 对于C++独有的特性（如移动语义、RAII等），说明Java为什么不需要以及Java的替代方案
+
+### Java 类比对照速查表
+
+| C++ 概念 | Java 类比 | 关键差异 |
+|----------|----------|---------|
+| `class` | `class` | C++有析构函数，Java有finalize/try-with-resources |
+| `virtual` 函数 | 普通方法 | Java所有非final方法默认虚函数，C++需显式virtual |
+| 纯虚类 `=0` | `interface` | C++纯虚类可有成员变量，Java接口不能(Java8+可有default) |
+| `override` | `@Override` | 功能相同，编译期检查 |
+| `const` 成员函数 | 无直接等价 | Java无const方法概念，只能通过设计约束 |
+| `constexpr` | 无直接等价 | Java无编译期常量表达式计算 |
+| `enum class` | `enum` | C++强类型枚举更严格，Java枚举是类 |
+| `namespace` | `package` | C++可嵌套、可别名，Java与目录结构绑定 |
+| `using`/`typedef` | 无直接等价 | Java无类型别名，可用继承或包装类模拟 |
+| `std::unique_ptr` | 无直接等价 | Java有GC，不需要独占指针 |
+| `std::shared_ptr` | 无直接等价 | Java引用类似shared_ptr但由GC管理 |
+| `std::weak_ptr` | `WeakReference<T>` | 概念相同，用途相同 |
+| `template` | 泛型 `<T>` | C++模板是代码生成，Java泛型是类型擦除 |
+| `std::move` | 无直接等价 | Java所有对象都是引用，无需移动语义 |
+| `operator<<` | `toString()` | Java用toString()，C++用流插入运算符 |
+| `friend` | 无直接等价 | Java无友元，可用包访问或内部类模拟 |
+| `std::optional` | `Optional<T>` | 概念相同，Java的Optional是引用类型 |
+| `std::variant` | 无直接等价 | Java可用继承体系或Object模拟 |
+| `std::mutex` | `synchronized`/`ReentrantLock` | 概念相同，C++更底层 |
+| `std::atomic` | `AtomicInteger`等 | 概念相同 |
+| `std::promise/future` | `CompletableFuture` | 概念相似 |
+| Lambda `[=](x){}` | Lambda `(x) -> {}` | C++需指定捕获方式，Java自动捕获有效final变量 |
+| `base::Callback` | `Consumer<T>`/`Function<T,R>` | 概念相似，Chromium回调更注重一次性语义 |
+| `base::WeakPtr` | `WeakReference<T>` | 概念相同，用途相同(防止悬空引用) |
+| `static_assert` | 无直接等价 | Java无编译期断言，可用注解处理器实现 |
+| `if constexpr` | 无直接等价 | Java泛型无编译期条件分支 |
+| `=delete` | `private`构造函数 | Java用private构造禁止实例化 |
+| Pimpl | 无直接等价 | Java天然隔离(不同文件)，不需要Pimpl |
+| RAII | try-with-resources | C++用析构函数，Java用AutoCloseable |
+| 指针 `*`/`->` | 无直接等价 | Java只有引用，无指针运算 |
+| 引用 `&` | 引用(默认) | Java所有对象变量都是引用 |
+| `#include` | `import` | C++是文本包含，Java是模块引用 |
+| `#pragma once` | 无需 | Java的import机制天然防止重复 |
+
+### 优化状态
+
+| 编号 | 教材名称 | V1完成 | V2优化(Java类比) |
+|------|---------|--------|-----------------|
+| 01 | C++基础语法回顾 | ✅ | 🔄 |
+| 02 | 类与对象 | ✅ | 🔄 |
+| 03 | 继承与多态 | ✅ | 🔄 |
+| 04 | 模板与泛型编程 | ✅ | 🔄 |
+| 05 | 智能指针与内存管理 | ✅ | 🔄 |
+| 06 | 现代C++特性 | ✅ | 🔄 |
+| 07 | Lambda表达式与函数式编程 | ✅ | 🔄 |
+| 08 | 移动语义与完美转发 | ✅ | 🔄 |
+| 09 | STL容器与算法 | ✅ | 🔄 |
+| 10 | 命名空间与类型别名 | ✅ | 🔄 |
+| 11 | 运算符重载与friend | ✅ | 🔄 |
+| 12 | 并发与线程安全 | ✅ | 🔄 |
+| 13 | 类型特征与元编程 | ✅ | 🔄 |
+| 14 | Chromium基础库 | ✅ | 🔄 |
+| 15 | 如何阅读与导航蓝牙协议栈代码 | ✅ | 🔄 |

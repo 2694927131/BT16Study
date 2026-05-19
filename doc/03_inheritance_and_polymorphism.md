@@ -134,6 +134,33 @@ class Car {
 
 > **蓝牙协议栈中的例子**：`ControllerImpl`（控制器实现）**是** `Controller`（控制器接口）的一种具体实现。这完全符合 is-a 关系。
 
+### ☕ Java 类比
+
+| 特性 | C++ | Java |
+|------|-----|------|
+| 继承语法 | `class Derived : public Base` | `class Derived extends Base` |
+| 继承方式选择 | `public`/`protected`/`private` | 只有 `public`（相当于 C++ 的 public 继承） |
+| 默认继承方式 | `private`（class）/ `public`（struct） | 始终 `public` |
+
+**对比代码**：
+
+```cpp
+// C++: 必须指定继承方式
+class ControllerImpl : public Controller { };   // public 继承
+class ControllerImpl : protected Controller { }; // protected 继承（罕见）
+class ControllerImpl : private Controller { };   // private 继承（罕见）
+```
+
+```java
+// Java: 只有 public 继承，无需指定
+public class ControllerImpl extends Controller { }  // 唯一方式
+```
+
+**关键差异**：
+- Java **只有 `public` 继承**，没有 `protected` 和 `private` 继承。C++ 的三种继承方式在 Java 中简化为一种
+- Java 用 `extends` 关键字，语义更清晰；C++ 用 `: public`，更简洁但需要记住继承方式
+- Java 的 `extends` 只能继承一个类（单继承），C++ 可以继承多个类（多继承，第 6 节详解）
+
 ---
 
 ## 2. 虚函数与多态
@@ -278,6 +305,47 @@ void some_upper_layer_function(Controller* controller) {
 // 如果手机用的是博通芯片，controller 指向 BroadcomControllerImpl
 // 上层代码完全不需要修改！这就是多态的威力。
 ```
+
+### ☕ Java 类比
+
+| 特性 | C++ 虚函数 | Java 方法 |
+|------|----------|----------|
+| 默认行为 | **非虚**（静态绑定），需显式加 `virtual` | **默认虚**（动态绑定），无需额外关键字 |
+| 声明虚函数 | `virtual void draw();` | `void draw();`（自动虚） |
+| 关闭虚行为 | 不加 `virtual` 即可 | `final` 关键字：`final void draw()` |
+| 性能开销 | 有 vtable 指针开销 | 同样有虚方法表开销 |
+
+**对比代码**：
+
+```cpp
+// C++: 必须显式写 virtual 才能多态
+class Shape {
+public:
+    virtual void draw() { cout << "Drawing a shape\n"; }  // 必须加 virtual！
+};
+
+class Circle : public Shape {
+public:
+    void draw() override { cout << "Drawing a circle\n"; }
+};
+```
+
+```java
+// Java: 方法默认就是虚的，自动支持多态
+public class Shape {
+    public void draw() { System.out.println("Drawing a shape"); }  // 自动虚！
+}
+
+public class Circle extends Shape {
+    @Override
+    public void draw() { System.out.println("Drawing a circle"); }
+}
+```
+
+**关键差异**：
+- Java 的**所有非 static、非 final、非 private 的方法默认都是虚函数**，自动支持多态。C++ 必须显式加 `virtual` 关键字
+- Java 的设计哲学是"默认安全"——多态是常态，不需要记住加 `virtual`。C++ 的设计哲学是"零开销"——不为不需要多态的函数付出 vtable 开销
+- Java 中要禁止方法被重写，用 `final`；C++ 中要启用多态，用 `virtual`——两者思路相反
 
 ---
 
@@ -523,6 +591,39 @@ public:
 ```
 
 > **黄金法则**：C++11 及以后，**所有重写基类虚函数的地方都必须加上 `override`**。这不是可选项，而是必须遵守的编码规范。
+
+### ☕ Java 类比
+
+| 特性 | C++ `override` | Java `@Override` |
+|------|---------------|-----------------|
+| 类型 | 关键字（语言级） | 注解（Annotation） |
+| 位置 | 函数声明末尾：`void foo() override;` | 函数声明上方：`@Override public void foo()` |
+| 编译器检查 | ✅ 确认基类有对应虚函数 | ✅ 确认父类/接口有对应方法 |
+| 防止拼写错误 | ✅ | ✅ |
+| 防止参数不匹配 | ✅ | ✅ |
+
+**对比代码**：
+
+```cpp
+// C++: override 关键字
+class Handler : public PostableContext {
+public:
+    virtual void Post(common::OnceClosure closure) override;  // 末尾
+};
+```
+
+```java
+// Java: @Override 注解
+public class Handler extends PostableContext {
+    @Override                                           // 上方
+    public void post(Runnable closure) { ... }
+}
+```
+
+**关键差异**：
+- C++ 的 `override` 是**关键字**，Java 的 `@Override` 是**注解**，但功能完全一致
+- 位置不同：C++ 放在函数声明末尾，Java 放在函数声明上方
+- 两者都是**最佳实践**：凡是重写父类方法，都应该加上 `override`/`@Override`
 
 ---
 
@@ -773,6 +874,54 @@ private:
 | **可测试** | 单元测试可以用 `FakeController` 替代真实硬件 |
 | **规范约束** | 所有芯片实现者必须实现完整的 100+ 个函数，遗漏任何一个都会编译失败 |
 
+### ☕ Java 类比
+
+| 特性 | C++ 纯虚函数/抽象类 | Java `interface`/`abstract class` |
+|------|-------------------|--------------------------------|
+| 纯虚函数 | `virtual void foo() = 0;` | `abstract void foo();`（abstract 类中）或 `void foo();`（interface 中） |
+| 抽象类 | 含 `= 0` 的类 | `abstract class` |
+| 接口 | 用全纯虚类模拟 | `interface` 关键字 |
+| 不能实例化 | ✅ | ✅ |
+| 可以有默认实现 | ✅（普通虚函数） | ✅（Java 8+ 的 `default` 方法） |
+
+**对比代码**：
+
+```cpp
+// C++: 用全纯虚类模拟接口
+class IPostableContext {
+public:
+    virtual ~IPostableContext() {}
+    virtual void Post(base::OnceClosure closure) = 0;  // 纯虚函数
+};
+
+// C++: 抽象类（部分纯虚 + 部分有实现）
+class Controller {
+public:
+    virtual ~Controller() = default;
+    virtual void Reset() = 0;           // 纯虚
+    virtual void Dump(int fd) const {}  // 有默认实现
+};
+```
+
+```java
+// Java: 用 interface 关键字
+public interface IPostableContext {
+    void post(Runnable closure);  // 自动 abstract，无需 = 0
+}
+
+// Java: abstract class
+public abstract class Controller {
+    public abstract void reset();           // 抽象方法
+    public void dump(int fd) { }           // 有默认实现
+}
+```
+
+**关键差异**：
+- Java 有专门的 `interface` 关键字，C++ 用"全纯虚函数 + 虚析构函数的类"来模拟
+- Java 的 `interface` 中方法默认是 `public abstract` 的，不需要显式写 `abstract`。C++ 必须写 `= 0`
+- Java 8+ 的 interface 支持 `default` 方法（有默认实现），这与 C++ 抽象类中的普通虚函数类似
+- C++ 的纯虚函数可以有函数体（`virtual void foo() = 0 { /* 实现 */ }`），但很少用；Java 的 abstract 方法不能有函数体
+
 ---
 
 ## 5. 虚析构函数
@@ -908,6 +1057,40 @@ public:
 > **如果一个类会被作为基类使用，并且有可能通过基类指针 delete 派生类对象，那么基类的析构函数必须是 virtual 的。**
 >
 > 更简单的记忆方式：**只要你的类有 virtual 函数，析构函数也应该是 virtual 的。**
+
+### ☕ Java 类比
+
+| 特性 | C++ 虚析构函数 | Java |
+|------|-------------|------|
+| 是否需要 | ✅ 必须手动声明 | ❌ **不需要** |
+| 原因 | 通过基类指针 delete 派生类对象时，需动态绑定析构函数 | Java 有 GC，不需要手动 delete |
+| 析构顺序问题 | 非 virtual 析构会导致派生类析构不被调用 | GC 自动处理，不存在此问题 |
+
+**Java 为什么不需要虚析构函数？**
+
+- Java 有**垃圾回收器**，对象不再被引用时自动回收，程序员不需要手动 `delete`
+- C++ 的虚析构函数解决的是"通过基类指针 `delete` 派生类对象"的问题。Java 中不存在 `delete`，所以这个问题根本不存在
+- Java 中如果需要显式释放资源，使用 `AutoCloseable` + `try-with-resources`，而不是析构函数
+
+```cpp
+// C++: 必须用虚析构函数确保正确释放
+class Controller {
+public:
+    virtual ~Controller() = default;  // 必须 virtual！
+};
+Controller* ptr = new ControllerImpl();
+delete ptr;  // 需要 virtual ~ 才能正确调用 ControllerImpl 的析构函数
+```
+
+```java
+// Java: 不需要虚析构函数
+Controller ctrl = new ControllerImpl();
+// ctrl 不再被引用时，GC 自动回收，无需手动 delete
+// 如果需要显式释放资源：
+try (Controller ctrl = new ControllerImpl()) {
+    // 使用 ctrl...
+}  // ctrl.close() 自动调用
+```
 
 ---
 
@@ -1076,6 +1259,45 @@ class Queue : public IQueueEnqueue<T>, public IQueueDequeue<T> {
 | 内部存储 | 有 `std::queue<std::unique_ptr<T>> queue_` | 只有两个指针 `tx_`, `rx_` |
 | 模板参数 | 同一个 T | 可以是不同的 T1 和 T2 |
 
+### ☕ Java 类比
+
+| 特性 | C++ 多继承 | Java |
+|------|----------|------|
+| 类的多继承 | ✅ 支持 | ❌ **不支持**（只能继承一个类） |
+| 接口多继承 | ✅（用纯虚类模拟） | ✅ `implements Interface1, Interface2` |
+| 替代方案 | — | 用接口 + 组合（委托模式） |
+
+**对比代码**：
+
+```cpp
+// C++: 多继承——同时继承两个接口
+class BidiQueueEnd : public IQueueEnqueue<TENQUEUE>,
+                     public IQueueDequeue<TDEQUEUE> {
+    // 必须实现两个接口的所有纯虚函数
+    void RegisterEnqueue(...) override { tx_->RegisterEnqueue(...); }
+    void TryDequeue() override { return rx_->TryDequeue(); }
+    // ...
+};
+```
+
+```java
+// Java: 用接口实现类似效果
+public class BidiQueueEnd<TEnqueue, TDequeue>
+        implements IQueueEnqueue<TEnqueue>, IQueueDequeue<TDequeue> {
+    // 实现两个接口的所有方法
+    @Override
+    public void registerEnqueue(...) { tx.registerEnqueue(...); }
+    @Override
+    public TDequeue tryDequeue() { return rx.tryDequeue(); }
+    // ...
+}
+```
+
+**关键差异**：
+- Java **不支持类的多继承**，一个类只能 `extends` 一个父类。但可以 `implements` 多个接口
+- C++ 的多继承可以继承有状态的类（有成员变量），Java 的接口不能有实例字段（Java 8+ 只能有 `default` 方法和 `static` 方法）
+- Java 用**接口 + 委托模式**来替代 C++ 的多继承。`BidiQueueEnd` 内部持有 `tx_` 和 `rx_` 指针并转发调用，这种模式在 Java 中同样适用
+
 ---
 
 ## 7. 虚继承
@@ -1226,6 +1448,47 @@ public:
 ```
 
 > **注意**：在 Android 蓝牙协议栈的实际代码中，菱形继承比较少见。大多数情况下的多继承都是像 `BidiQueueEnd` 那样继承多个 **不相关的接口类**（`IQueueEnqueue` 和 `IQueueDequeue` 没有共同基类），所以不需要虚继承。
+
+### ☕ Java 类比
+
+| 特性 | C++ 虚继承 | Java |
+|------|----------|------|
+| 菱形继承问题 | ✅ 存在（多继承有状态类时） | ❌ **不存在** |
+| 虚继承 `virtual public` | ✅ 解决菱形问题 | ❌ 不需要 |
+| 原因 | C++ 支持多继承有状态的类 | Java 只能继承一个类 + 多个无状态接口 |
+
+**Java 为什么没有菱形继承问题？**
+
+- Java 的接口**没有实例字段**（无状态），即使一个类实现了两个有相同方法签名的接口，也不会产生"两份数据"的问题
+- Java 只允许继承**一个类**，所以不可能出现"通过两条路径继承同一个有状态的类"的情况
+- 即使接口有 `default` 方法的冲突，Java 编译器也会要求子类**显式重写**冲突方法
+
+```cpp
+// C++: 菱形继承——Device 被继承两次
+class Device { public: int id_; };
+class Scanner : public Device { };
+class Connector : public Device { };
+class BluetoothDevice : public Scanner, public Connector { };
+// bt.id_ 歧义！两份 id_！
+```
+
+```java
+// Java: 不可能有菱形问题
+// 1. 只能继承一个类
+public class BluetoothDevice extends Scanner { }  // Scanner 是唯一的父类
+
+// 2. 接口无状态，即使"菱形"也不冲突
+interface IScanner { void scan(); }
+interface IConnector { void connect(); }
+class BluetoothDevice implements IScanner, IConnector {
+    // 两个接口没有共同状态，不会产生歧义
+}
+```
+
+**关键差异**：
+- Java 的**单继承 + 多接口**设计从根本上避免了菱形继承问题，不需要虚继承
+- C++ 的虚继承是解决多继承副作用的复杂机制，Java 通过限制语言特性（不支持类多继承）来避免这个复杂性
+- 这是 Java 在语言设计上"少即是多"的典型体现
 
 ---
 

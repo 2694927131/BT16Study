@@ -164,7 +164,42 @@ void CallOn(T* obj, Functor&& functor, Args&&... args) {
 - 多了一个模板参数 `T`（对象类型）
 - 多了一个函数参数 `T* obj`（对象指针）
 - `common::Unretained(obj)` 将裸指针包装为不管理生命周期的指针
-- 用于调用**成员函数**：`handler->CallOn(device, &Device::Connect)`
+-// 用于调用**成员函数**：`handler->CallOn(device, &Device::Connect)`
+
+### ☕ Java 类比
+
+| 特性 | C++ 函数模板 | Java 泛型方法 |
+|------|-----------|-------------|
+| 声明 | `template <typename T> T Max(T a, T b)` | `<T extends Comparable<T>> T max(T a, T b)` |
+| 类型推导 | ✅ 编译器自动推导 `T` | ✅ 编译器自动推导 `T` |
+| 实现方式 | **代码生成**——每种类型生成一份代码 | **类型擦除**——编译为一份 `Object` 代码 |
+| 基本类型支持 | ✅ `Max(3, 5)` 生成 `int` 版本 | ❌ 基本类型必须用包装类 `Integer` |
+
+**对比代码**：
+
+```cpp
+// C++: 函数模板
+template <typename T>
+T Max(T a, T b) {
+    return (a > b) ? a : b;
+}
+Max(3, 5);           // 生成 int 版本的代码
+Max(3.14, 2.72);     // 生成 double 版本的代码
+```
+
+```java
+// Java: 泛型方法
+public static <T extends Comparable<T>> T max(T a, T b) {
+    return (a.compareTo(b) > 0) ? a : b;
+}
+max(3, 5);           // T = Integer（自动装箱）
+max(3.14, 2.72);     // T = Double（自动装箱）
+```
+
+**关键差异**：
+- C++ 模板是**代码生成**：编译器为每种使用的类型生成一份独立的函数代码。Java 泛型是**类型擦除**：编译后所有类型参数变为 `Object`，运行时只有一份代码
+- C++ 模板支持**基本类型**（`int`、`double`），Java 泛型不支持（必须用 `Integer`、`Double` 包装类）
+- C++ 模板的错误信息通常很长（因为涉及模板实例化），Java 泛型的错误信息更友好
 
 ---
 
@@ -343,7 +378,43 @@ public:
 
 1. `T` 用在静态方法的返回类型中：`std::optional<T>`
 2. `T` 用在静态方法体中调用 `T::FromString(str)`——这要求 `T` 必须有 `FromString` 静态方法
-3. 使用方式：`class MyConfig : public Serializable<MyConfig> { ... };`
+3.// 使用方式：`class MyConfig : public Serializable<MyConfig> { ... };`
+
+### ☕ Java 类比
+
+| 特性 | C++ 类模板 | Java 泛型类 |
+|------|----------|-----------|
+| 声明 | `template <typename T> class Stack` | `public class Stack<T>` |
+| 使用 | `Stack<int>` | `Stack<Integer>`（基本类型需包装） |
+| 多参数 | `template <typename K, typename V> class Map` | `public class Map<K, V>` |
+| 实现方式 | 代码生成（每种类型独立代码） | 类型擦除（运行时只有一份代码） |
+| 运行时类型信息 | ✅ 保留（`Stack<int>` 和 `Stack<double>` 是不同类型） | ❌ 擦除（`Stack<Integer>` 和 `Stack<String>` 运行时相同） |
+
+**对比代码**：
+
+```cpp
+// C++: 类模板
+template <typename TUP, typename TDOWN>
+class BidiQueue {
+    Queue<TUP> up_queue_;
+    Queue<TDOWN> down_queue_;
+};
+// 使用：BidiQueue<HciEvent, HciCommand> queue(10);
+```
+
+```java
+// Java: 泛型类
+public class BidiQueue<TUp, TDown> {
+    private Queue<TUp> upQueue;
+    private Queue<TDown> downQueue;
+}
+// 使用：BidiQueue<HciEvent, HciCommand> queue = new BidiQueue<>(10);
+```
+
+**关键差异**：
+- C++ 类模板为每种类型参数组合**生成独立的类**。`BidiQueue<HciEvent, HciCommand>` 和 `BidiQueue<HciCommand, HciEvent>` 是完全不同的两个类。Java 泛型在运行时只有一份字节码
+- C++ 模板参数可以是**任意类型**（包括基本类型 `int`），Java 泛型参数只能是**引用类型**（`Integer` 而非 `int`）
+- Java 的类型擦除意味着运行时无法 `new T()` 或 `instanceof T`，C++ 模板没有这些限制
 
 ---
 
@@ -489,6 +560,47 @@ void CallOn(T* obj, Functor&& functor, Args&&... args) {
 handler->CallOn(device, &Device::Connect, timeout_value);
 // T = Device, Functor = void(Device::*)(int), Args = {int}
 ```
+
+### ☕ Java 类比
+
+| 特性 | C++ 变长参数包 `typename... Args` | Java 可变参数 `T...` |
+|------|--------------------------------|-------------------|
+| 声明 | `template <typename... Args>` | `T... args`（T 必须是具体类型） |
+| 类型安全 | ✅ 每个参数可以有不同类型 | ⚠️ 所有参数必须是同一类型 `T` |
+| 获取参数数量 | `sizeof...(Args)` | `args.length` |
+| 展开方式 | 递归 / 折叠表达式 / 初始化列表 | 增强for循环（就是数组） |
+
+**对比代码**：
+
+```cpp
+// C++: 变长参数包——每个参数类型可以不同
+template <typename Functor, typename... Args>
+void Call(Functor&& functor, Args&&... args) {
+    Post(common::BindOnce(std::forward<Functor>(functor), std::forward<Args>(args)...));
+}
+handler->Call(MyFunc, 42, 3.14, "hello");  // 三种不同类型
+```
+
+```java
+// Java: 可变参数——所有参数必须是同一类型
+public void call(Runnable functor, Object... args) {
+    // args 是 Object[]，类型信息丢失
+}
+// handler.call(myFunc, 42, 3.14, "hello");  // 可以，但都变成了 Object
+
+// Java 泛型可变参数
+public <T> void callAll(T... items) {
+    for (T item : items) {
+        // 处理每个 item
+    }
+}
+callAll("a", "b", "c");  // T = String
+```
+
+**关键差异**：
+- C++ 的变长参数包**每个参数可以是不同类型**，Java 的可变参数 `T...` 所有参数必须是同一类型
+- C++ 参数包在**编译期展开**，零运行时开销；Java 的可变参数在运行时就是数组
+- C++ 的 `Args&&...` 配合 `std::forward` 实现完美转发，Java 没有等价机制
 
 ---
 
@@ -770,6 +882,55 @@ is_specialization_of<std::string, std::vector>::value        // false
 is_specialization_of<std::list<double>, std::vector>::value  // false
 ```
 
+### ☕ Java 类比
+
+| 特性 | C++ SFINAE | Java |
+|------|-----------|------|
+| `std::enable_if` | ✅ 根据条件启用/禁用模板 | ❌ **无等价** |
+| `std::is_integral_v<T>` | ✅ 编译期类型判断 | ❌ 无编译期等价（反射是运行时） |
+| `if constexpr` (C++17) | ✅ 编译期条件分支 | ❌ 无等价 |
+| 替代方案 | — | **方法重载** + **泛型边界** |
+
+**Java 为什么不需要 SFINAE？**
+
+SFINAE 是 C++ 模板元编程的核心技术，用于在编译期根据类型特征选择不同的函数实现。Java 通过以下方式替代：
+
+1. **方法重载**：Java 的方法重载天然支持根据参数类型选择不同实现
+2. **泛型边界**：`<T extends SomeClass>` 限制泛型参数的类型范围
+3. **运行时类型检查**：`instanceof` 在运行时判断类型（不如 SFINAE 高效，但更简单）
+
+```cpp
+// C++: SFINAE —— 编译期根据类型选择不同实现
+template <typename T, typename std::enable_if<std::is_integral_v<T>, int>::type = 0>
+static MutationEntry Set(PropertyType type, string section, string property, T value) {
+    return Set(type, section, property, std::to_string(value));  // 整数 → 转字符串
+}
+
+template <typename T, typename std::enable_if<std::is_enum_v<T>, int>::type = 0>
+static MutationEntry Set(PropertyType type, string section, string property, T value) {
+    return Set(type, section, property, (int)value);  // 枚举 → 转整数
+}
+```
+
+```java
+// Java: 方法重载 —— 编译期根据参数类型选择不同实现
+public static MutationEntry set(PropertyType type, String section, String property, int value) {
+    return set(type, section, property, String.valueOf(value));  // 整数
+}
+
+public static MutationEntry set(PropertyType type, String section, String property, String value) {
+    return new MutationEntry(EntryType.SET, type, section, property, value);  // 字符串
+}
+
+// 对于枚举，Java 的方法重载无法区分不同枚举类型，
+// 需要运行时 instanceof 或传入 Class<T> 参数
+```
+
+**关键差异**：
+- SFINAE 是**编译期**的类型分发机制，零运行时开销。Java 的方法重载也是编译期分发，但灵活性远不如 SFINAE
+- SFINAE 可以根据任意类型特征（`is_integral`、`is_base_of` 等）选择实现，Java 的方法重载只能根据参数的静态类型选择
+- Java 无法在编译期判断泛型参数是否为枚举、是否继承某个类等，这些在 C++ 中通过 `<type_traits>` 轻松实现
+
 ---
 
 ## 5. CRTP (奇异递归模板模式)
@@ -945,6 +1106,55 @@ auto result = Serializable<BadConfig>::FromString("test");
 ```
 
 这种编译期检查正是 CRTP 的价值——错误在编译期就被发现，而不是运行时。
+
+### ☕ Java 类比
+
+| 特性 | C++ CRTP | Java |
+|------|---------|------|
+| 模式 | `class Derived : public Base<Derived>` | ❌ **无等价** |
+| 编译期多态 | ✅ 零开销 | ❌ 无此概念 |
+| 替代方案 | — | 普通继承 + 虚方法（有运行时开销） |
+
+**Java 为什么不需要 CRTP？**
+
+CRTP 的核心目的是在 C++ 中实现**编译期多态**（零开销抽象），避免虚函数表的运行时开销。Java 不需要 CRTP 的原因：
+
+1. Java 的 **JIT 编译器**会自动做**去虚化（devirtualization）**优化——如果 JIT 发现某个虚方法只有一个实现，会自动内联，效果类似 CRTP
+2. Java 的方法调用开销本身比 C++ 低（不需要经过 vtable 间接寻址），性能差异不明显
+3. Java 的泛型是类型擦除，无法实现 `Base<Derived>` 这种"基类知道派生类类型"的模式
+
+```cpp
+// C++: CRTP 实现编译期多态
+template <typename T>
+class Serializable {
+public:
+    static std::optional<T> FromString(const std::string& str) {
+        return T::FromString(str);  // 编译期确定调用哪个 FromString
+    }
+};
+class DeviceConfig : public Serializable<DeviceConfig> { };
+```
+
+```java
+// Java: 用普通继承 + 虚方法替代
+public abstract class Serializable<T> {
+    // 用抽象方法代替 CRTP 的静态方法调用
+    public abstract String toString();
+
+    // 无法实现 static FromString，因为 Java 泛型不支持 T::FromString
+    // 替代方案：让子类自己实现静态方法
+}
+public class DeviceConfig extends Serializable<DeviceConfig> {
+    public static Optional<DeviceConfig> fromString(String str) {
+        // 子类自己实现
+    }
+}
+```
+
+**关键差异**：
+- CRTP 是 C++ 独有的**编译期多态**技术，Java 没有等价机制
+- Java 通过 JIT 的去虚化优化来达到类似效果，但这是运行时优化，不如 CRTP 的编译期保证
+- CRTP 让基类可以调用派生类的**静态方法**，Java 的虚方法无法做到这一点
 
 ---
 
@@ -1124,6 +1334,63 @@ struct is_specialization_of<TemplateType<Args...>, TemplateType> : std::true_typ
 - 尝试通用版本：`T = std::vector<int>`, `TemplateType = std::vector`，可以匹配
 - 尝试偏特化版本：`TemplateType<Args...>` 匹配 `std::vector<int>`，得出 `TemplateType = std::vector`, `Args = {int}`，匹配成功
 - 偏特化优先级更高，所以选择偏特化版本，继承 `std::true_type`
+
+### ☕ Java 类比
+
+| 特性 | C++ 模板特化 | Java |
+|------|-----------|------|
+| 全特化 | `template <> class hash<Uuid> { };` | ❌ **无等价** |
+| 偏特化 | `template <typename T> class Pair<T, T> { };` | ❌ **无等价** |
+| 替代方案 | — | 方法重载 + 运行时类型判断 |
+
+**Java 为什么不需要模板特化？**
+
+模板特化是 C++ 模板代码生成的直接产物——因为每种类型生成独立代码，所以可以为特定类型提供特殊实现。Java 的泛型是类型擦除，运行时只有一份代码，所以无法为特定类型提供特殊实现。
+
+Java 的替代方案：
+
+1. **方法重载**：为不同类型提供不同的重载方法
+2. **`instanceof` 运行时判断**：在方法内部根据类型走不同分支
+3. **访问者模式**：通过多态实现类型分发
+
+```cpp
+// C++: 模板全特化——为 Uuid 提供专门的哈希实现
+template <>
+struct hash<bluetooth::Uuid> {
+    size_t operator()(const bluetooth::Uuid& key) const {
+        // Uuid 专用的哈希算法
+    }
+};
+// 使用：std::unordered_map<Uuid, Device> 自动使用特化版本
+```
+
+```java
+// Java: 无法特化泛型，需要运行时判断或方法重载
+public class UuidHasher {
+    // 方法重载——为 Uuid 提供专门方法
+    public static int hash(Uuid key) {
+        // Uuid 专用的哈希算法
+    }
+    public static int hash(Object key) {
+        return key.hashCode();  // 通用版本
+    }
+}
+
+// Java 的 HashMap 不需要特化——所有对象都有 hashCode() 方法
+// Uuid 只需要正确实现 hashCode() 即可
+public class Uuid {
+    @Override
+    public int hashCode() {
+        // Uuid 专用的哈希算法
+    }
+}
+Map<Uuid, Device> deviceMap = new HashMap<>();  // 自动使用 Uuid.hashCode()
+```
+
+**关键差异**：
+- C++ 的模板特化是**编译期**机制，零运行时开销。Java 的替代方案都涉及**运行时**分发
+- Java 的 `hashCode()` 模式更简洁：每个类自己实现 `hashCode()`，`HashMap` 不需要知道具体类型。C++ 需要 `std::hash` 特化是因为 `std::unordered_map` 依赖 `std::hash` 模板
+- C++ 的偏特化可以对类型模式进行匹配（如"两个类型相同的 Pair"），Java 完全无法做到
 
 ---
 

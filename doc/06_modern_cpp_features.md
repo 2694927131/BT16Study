@@ -234,6 +234,53 @@ enum class CodecId : uint64_t {
 | 同名枚举值 | 冲突 | 不冲突（不同类名限定） |
 | 大小可控 | 不确定 | 精确控制 |
 
+### ☕ Java 类比
+
+C++ 的 `enum class` 与 Java 的 `enum` 都解决了传统枚举的类型安全问题，但设计哲学不同：
+
+| 对比项 | C++ `enum class` | Java `enum` |
+|--------|------------------|-------------|
+| 本质 | 强类型整数 | 真正的类（继承自 `java.lang.Enum`） |
+| 作用域 | 必须用 `类名::值` | 必须用 `类名.值` |
+| 隐式转 int | 禁止，需 `static_cast` | 禁止，需 `ordinal()` 或自定义字段 |
+| 指定底层类型 | 可以 `: uint8_t` 等 | 不可以（固定为 int 语义） |
+| 添加字段/方法 | 不可以（纯枚举） | **可以**（枚举是类） |
+| 实现接口 | 不可以 | 可以 |
+| 同名枚举值 | 不冲突 | 不冲突 |
+
+**C++ enum class 示例：**
+
+```cpp
+enum class EattChannelState : uint8_t {
+    EATT_CHANNEL_PENDING = 0x00,
+    EATT_CHANNEL_OPENED,
+    EATT_CHANNEL_RECONFIGURING,
+};
+// 使用
+EattChannelState s = EattChannelState::EATT_CHANNEL_OPENED;
+int val = static_cast<uint8_t>(s);  // 显式转换
+```
+
+**Java enum 示例：**
+
+```java
+enum EattChannelState {
+    PENDING(0x00),
+    OPENED(0x01),
+    RECONFIGURING(0x02);
+
+    private final int value;
+
+    EattChannelState(int value) { this.value = value; }
+    public int getValue() { return value; }
+}
+// 使用
+EattChannelState s = EattChannelState.OPENED;
+int val = s.getValue();  // 通过自定义方法获取整数值
+```
+
+> **关键区别**：Java 的 `enum` 是真正的类，可以拥有字段、构造函数、方法和实现接口，功能远比 C++ `enum class` 丰富。C++ `enum class` 更轻量，只解决类型安全和大小控制问题。如果 C++ 需要"带方法的枚举"，通常用单独的类 + `static` 方法模拟。
+
 ---
 
 ## 2. constexpr（常量表达式，C++11/14）
@@ -403,6 +450,38 @@ constexpr std::chrono::milliseconds kHandlerStopTimeout = std::chrono::milliseco
 | 函数修饰 | 表示不修改成员 | 可在编译期执行 |
 | 构造函数 | 不能修饰 | 可以修饰 |
 
+### ☕ Java 类比
+
+Java **没有**与 `constexpr` 等价的机制。Java 的常量优化由 JIT 编译器在运行时完成，而非源码层面强制编译期计算。
+
+| 对比项 | C++ `constexpr` | Java |
+|--------|------------------|------|
+| 编译期常量变量 | `constexpr int X = 42;` | `static final int X = 42;`（JVM 可能内联，但不保证） |
+| 编译期函数 | `constexpr int square(int x) { return x * x; }` | 无等价。Java 方法总是在运行时执行 |
+| 编译期构造对象 | `constexpr Uuid(...)` | 无等价。Java 对象在运行时创建 |
+| 编译期断言 | `static_assert` 配合 constexpr | 无等价 |
+| 保证编译期求值 | **是**（编译器强制） | 否（`static final` 可能被内联，但不保证） |
+
+**C++ constexpr 示例：**
+
+```cpp
+constexpr size_t kNumBytes128 = 16;                    // 编译期常量
+constexpr size_t BytesToBits(size_t bytes) {            // 编译期可计算函数
+    return bytes * 8;
+}
+constexpr size_t uuid_bits = BytesToBits(16);           // 编译期算出 128
+```
+
+**Java 近似写法：**
+
+```java
+static final int NUM_BYTES_128 = 16;                    // 运行时常量，JIT 可能内联
+static int bytesToBits(int bytes) { return bytes * 8; } // 普通方法，运行时执行
+// 无法强制编译期计算
+```
+
+> **为什么 Java 不需要 `constexpr`？** Java 有垃圾回收和 JIT 编译器，运行时性能优化由 JVM 负责。Java 不需要像 C++ 那样在源码层面控制编译期计算，因为 JVM 会在运行时根据实际使用情况做更智能的优化（如内联、逃逸分析等）。
+
 ---
 
 ## 3. auto 关键字（C++11）
@@ -565,6 +644,39 @@ auto addr = p_inq->remote_bd_addr;
 | `auto& x = ...` | 可修改引用 | 需要修改元素 |
 | `auto&& x = ...` | 转发引用 | 泛型编程 |
 
+### ☕ Java 类比
+
+Java 10 引入了 `var` 关键字，与 C++ 的 `auto` 类似，都是让编译器推导变量类型。
+
+| 对比项 | C++ `auto` | Java `var` |
+|--------|------------|------------|
+| 引入版本 | C++11 (2011) | Java 10 (2018) |
+| 推导时机 | 编译期 | 编译期 |
+| 可用于成员变量 | 否（仅局部变量） | 否（仅局部变量） |
+| 可用于方法参数 | 否（泛型 Lambda 除外） | 否 |
+| 可用于方法返回值 | 否（C++14 可用 `auto` 返回） | 否 |
+| 引用语义 | `auto&` / `const auto&` 区分 | 无（Java 引用类型天然是引用） |
+| 值类型 | `auto x = 42;` → `int` | `var x = 42;` → `int`（基本类型） |
+| 复杂类型推导 | `auto it = map.find(key);` | `var it = map.get(key);` |
+
+**C++ auto 示例：**
+
+```cpp
+auto iter = eatt_channels.find(lcid);  // 推导为 map::iterator
+auto& channel = iter->second;          // 引用，可修改
+const auto& entry = *iter;             // 常量引用，只读
+```
+
+**Java var 示例：**
+
+```java
+var channels = new HashMap<Integer, EattChannel>();  // 推导为 HashMap<Integer, EattChannel>
+var channel = channels.get(5);                       // 推导为 EattChannel（天然是引用）
+// Java 无需 const auto&，因为引用类型天然不复制对象
+```
+
+> **关键区别**：C++ 的 `auto` 需要配合 `&` 和 `const` 来控制值/引用语义，因为 C++ 有值语义和引用语义之分。Java 的 `var` 只有引用语义（对于对象类型），不需要这些修饰符。
+
 ---
 
 ## 4. nullptr（C++11）
@@ -657,6 +769,38 @@ if (p_dev_rec == NULL) {
 | 转换为整数 | 可以 | 不可以 |
 | 转换为指针 | 隐式 | 隐式 |
 | 模板安全 | 不安全 | 安全 |
+
+### ☕ Java 类比
+
+Java 的 `null` 与 C++ 的 `nullptr` 在概念上相似，但类型系统差异很大：
+
+| 对比项 | C++ `nullptr` | Java `null` |
+|--------|---------------|-------------|
+| 类型 | `std::nullptr_t`（独立类型） | 无独立类型，是所有引用类型的特殊值 |
+| 可赋给整型 | 不可以 | 不可以 |
+| 可赋给指针/引用 | 可以 | 可以（任何引用类型） |
+| 重载歧义 | 无（`nullptr_t` 不会与 `int` 混淆） | 无（Java 无指针/整型重载歧义） |
+| 成员访问 | `nullptr->method()` → 未定义行为 | `null.method()` → `NullPointerException` |
+| 模板/泛型安全 | 安全（`nullptr_t` 不会推导为 `int`） | 安全（`null` 只能赋给引用类型） |
+
+**C++ nullptr 示例：**
+
+```cpp
+void connect(RawAddress* addr);   // 重载 1
+void connect(int timeout);        // 重载 2
+connect(nullptr);  // 调用重载 1，无歧义
+```
+
+**Java null 示例：**
+
+```java
+// Java 没有指针与整型的重载歧义问题
+void connect(RawAddress addr) { ... }  // 只有一种引用参数
+connect(null);  // 调用 connect(RawAddress)，无歧义
+// 如果 addr 为 null，调用 addr.method() 会抛 NullPointerException
+```
+
+> **关键区别**：C++ 需要 `nullptr` 来解决 `NULL`/`0` 在函数重载中的歧义问题。Java 没有这个问题，因为 Java 的引用类型和基本类型是完全不同的类别，`null` 只能赋给引用类型。
 
 ---
 
@@ -825,6 +969,47 @@ for (const auto& entry : bgconn_dev) {
 
 **最佳实践**：默认使用 `const auto&`，需要修改时用 `auto&`，简单值类型可以用 `auto`。
 
+### ☕ Java 类比
+
+C++ 的范围 for 循环与 Java 的 for-each 循环功能相同，但 C++ 需要显式控制引用语义：
+
+| 对比项 | C++ 范围 for | Java for-each |
+|--------|-------------|---------------|
+| 语法 | `for (const auto& x : container)` | `for (var x : container)` |
+| 引用/值控制 | `auto` / `auto&` / `const auto&` | 无需控制（引用类型天然是引用） |
+| 修改元素 | `for (auto& x : container)` | `for (var x : list) { x.set...() }` |
+| 遍历 map | `for (const auto& [k, v] : map)` (C++17) | `for (var entry : map.entrySet())` |
+| 可遍历数组 | 是（原生数组也支持） | 是 |
+| 迭代时删除 | 不安全（需用迭代器） | 不安全（需用 `Iterator.remove()`） |
+
+**C++ 范围 for 示例：**
+
+```cpp
+// 只读遍历
+for (const auto& entry : bgconn_dev) {
+    LOG_INFO("Device: %s", entry.first.ToString().c_str());
+}
+// 修改元素
+for (auto& channel : eatt_channels) {
+    channel.second->SetState(RECONFIGURING);
+}
+```
+
+**Java for-each 示例：**
+
+```java
+// 只读遍历
+for (var entry : bgconnDev.entrySet()) {
+    Log.info("Device: " + entry.getKey());
+}
+// 修改元素（引用类型，直接修改即可）
+for (var channel : channels.values()) {
+    channel.setState(State.RECONFIGURING);
+}
+```
+
+> **关键区别**：C++ 需要用 `const auto&` 避免不必要的拷贝，用 `auto&` 才能修改元素。Java 的 for-each 对引用类型天然不复制对象，也不需要 `const` 修饰。
+
 ---
 
 ## 6. static_assert（编译期断言，C++11）
@@ -944,6 +1129,36 @@ static_assert(sizeof(Uuid) == 16, "Uuid must be 16 bytes long!");
 | 生产代码 | 可通过 NDEBUG 禁用 | 始终生效 |
 | 开销 | 运行时开销 | 零运行时开销 |
 | 错误发现 | 迟（运行时） | 早（编译时） |
+
+### ☕ Java 类比
+
+Java **没有**与 `static_assert` 等价的机制。Java 无法在编译期对类型大小、布局等属性进行断言。
+
+| 对比项 | C++ `static_assert` | Java |
+|--------|---------------------|------|
+| 编译期断言 | `static_assert(sizeof(X) == 6, "...")` | 无等价 |
+| 运行时断言 | `assert(condition);` | `assert condition;`（需 `-ea` 启用） |
+| 检查类型大小 | 可以（`sizeof`） | 不可以（Java 不暴露对象大小） |
+| 检查类型特性 | 可以（`std::is_trivial<T>`） | 不可以（无等价类型特征） |
+| 自定义编译期检查 | 可以 | 无等价 |
+
+**C++ static_assert 示例：**
+
+```cpp
+static_assert(sizeof(RawAddress) == 6, "RawAddress must be 6 bytes!");
+static_assert(std::is_trivial<Uuid>(), "Uuid must be trivial!");
+```
+
+**Java 的替代方案：**
+
+```java
+// Java 无法在编译期检查对象大小或类型特性
+// 只能在运行时用 assert 或手动检查：
+assert rawAddress.getBytes().length == 6 : "Address must be 6 bytes";
+// 注意：Java 的 assert 默认禁用，需要 -ea 标志才能生效
+```
+
+> **为什么 Java 不需要 `static_assert`？** Java 运行在 JVM 上，对象布局由 JVM 管理，开发者无法也不需要控制类型大小。Java 也没有模板元编程的需求，因此编译期断言在 Java 中没有使用场景。
 
 ---
 
@@ -1087,6 +1302,49 @@ void regular_function() {
 | 分支编译 | 所有分支都编译 | 只编译满足条件的分支 |
 | 条件类型 | 任意布尔表达式 | 编译期常量表达式 |
 | 典型用途 | 运行时逻辑分支 | 模板中根据类型选择代码路径 |
+
+### ☕ Java 类比
+
+Java **没有**与 `if constexpr` 等价的机制。Java 的泛型使用类型擦除，不存在"根据类型选择不同代码路径"的编译期分支需求。
+
+| 对比项 | C++ `if constexpr` | Java |
+|--------|---------------------|------|
+| 编译期条件分支 | `if constexpr (std::is_same_v<T, int>)` | 无等价 |
+| 不满足条件的分支 | 不编译（可以包含无效代码） | 必须通过编译 |
+| 类型特征判断 | `std::is_same_v`, `std::is_integral_v` 等 | `instanceof`（运行时） |
+| 替代方案 | — | 方法重载、访问者模式、`instanceof` |
+
+**C++ if constexpr 示例：**
+
+```cpp
+template<typename T>
+void process(T value) {
+    if constexpr (std::is_same_v<T, int>) {
+        int x = value + 1;  // T 是 int 时才编译
+    } else {
+        std::string s = value + " world";  // T 不是 int 时才编译
+    }
+}
+```
+
+**Java 的替代方案：**
+
+```java
+// 方式 1：方法重载（编译期选择，最常用）
+void process(int value) { int x = value + 1; }
+void process(String value) { String s = value + " world"; }
+
+// 方式 2：运行时 instanceof 检查
+void process(Object value) {
+    if (value instanceof Integer i) {
+        int x = i + 1;
+    } else if (value instanceof String s) {
+        String result = s + " world";
+    }
+}
+```
+
+> **为什么 Java 不需要 `if constexpr`？** C++ 模板在编译期实例化，不同类型可能需要完全不同的代码路径，`if constexpr` 让这些路径互不干扰。Java 的泛型使用类型擦除，所有类型共享同一份字节码，不需要编译期分支。Java 用方法重载实现类似效果。
 
 ---
 
@@ -1233,6 +1491,38 @@ C++ 标准还定义了其他属性，了解即可：
 |------|------|---------|
 | `[[nodiscard]]` | 忽略返回值时编译器警告 | 错误码、资源获取、重要查询结果 |
 | `[[fallthrough]]` | 抑制 switch 穿透警告 | 故意让 case 穿透到下一个 |
+
+### ☕ Java 类比
+
+Java **没有**与 `[[nodiscard]]` 和 `[[fallthrough]]` 等价的机制。
+
+| 对比项 | C++ 属性 | Java |
+|--------|----------|------|
+| 忽略返回值警告 | `[[nodiscard]]` | 无等价（IDE 可能警告，但非语言特性） |
+| switch 穿透警告 | `[[fallthrough]]` | 无等价（Java 允许穿透，不警告） |
+| 标记已弃用 | `[[deprecated]]` | `@Deprecated` 注解 |
+| 标记不返回 | `[[noreturn]]` | 无等价 |
+| 抑制未使用警告 | `[[maybe_unused]]` | 无等价（IDE 可能警告） |
+
+**C++ [[nodiscard]] 示例：**
+
+```cpp
+[[nodiscard]] bool Connect(const RawAddress& addr);
+Connect(addr);  // 编译器警告：忽略返回值
+```
+
+**Java 的替代方案：**
+
+```java
+// Java 没有语言级别的 [[nodiscard]]
+// 替代方案 1：使用注解（需要自定义或第三方库）
+@CheckReturnValue  // 来自 Error Prone 或 JSR-305
+boolean connect(RawAddress addr);
+
+// 替代方案 2：IDE 配置检查规则（如 IntelliJ 的 "Result of method call ignored"）
+```
+
+> **为什么 Java 不需要这些属性？** Java 的注解系统（如 `@Deprecated`）提供了部分类似功能，但 `[[nodiscard]]` 和 `[[fallthrough]]` 这类编译器提示在 Java 社区中需求不强。Java 程序员通常依赖 IDE 警告和代码审查工具（如 Error Prone、SpotBugs）来发现这类问题，而非语言内置机制。
 
 ---
 
@@ -1465,6 +1755,46 @@ public:
 | 错误检测 | 编译期（调用已删除函数 → 编译错误） | — |
 | 生成代码 | 不生成 | 生成默认实现 |
 
+### ☕ Java 类比
+
+Java **没有** `= delete` 和 `= default` 的直接等价，但可以通过其他方式实现相同效果：
+
+| 对比项 | C++ | Java |
+|--------|-----|------|
+| 禁止拷贝 | `ClassName(const ClassName&) = delete;` | 将拷贝构造函数设为 `private`（或不提供） |
+| 禁止赋值 | `operator=(const ClassName&) = delete;` | 无需处理（Java 没有运算符重载） |
+| 显式默认构造 | `ClassName() = default;` | 无需处理（Java 默认就有无参构造） |
+| 显式默认析构 | `~ClassName() = default;` | 无需处理（Java 有 GC，无析构函数） |
+| 禁止特定参数类型 | `void process(double) = delete;` | 无等价（Java 无法禁止特定类型重载） |
+
+**C++ = delete 示例：**
+
+```cpp
+class EattExtension {
+public:
+    EattExtension(const EattExtension&) = delete;           // 禁止拷贝
+    EattExtension& operator=(const EattExtension&) = delete; // 禁止赋值
+    Controller() = default;                                   // 显式默认构造
+};
+```
+
+**Java 的替代方案：**
+
+```java
+class EattExtension {
+    // 禁止拷贝：将克隆方法设为 private 或不实现 Cloneable
+    private EattExtension copy() { throw new UnsupportedOperationException(); }
+
+    // Java 没有赋值运算符重载，无需禁止
+
+    // 默认构造：Java 自动提供，无需显式声明
+    // 如果定义了其他构造函数，无参构造不会自动生成，需手动写：
+    public EattExtension() {}
+}
+```
+
+> **关键区别**：C++ 的 `= delete` 是语言级别的禁止，编译器会直接报错。Java 需要通过访问控制（`private`）或运行时异常来模拟，不如 C++ 优雅。Java 不需要 `= default`，因为 Java 没有析构函数，默认构造函数的行为也更简单。
+
 ---
 
 ## 10. std::optional（C++17）
@@ -1631,6 +1961,49 @@ if (device.has_value()) {
 | 获取值 | `*opt` 或 `opt->` | 未定义行为 |
 | 获取值或默认 | `opt.value_or(default)` | 返回默认值 |
 
+### ☕ Java 类比
+
+Java 8 引入了 `Optional<T>`，与 C++ 的 `std::optional<T>` 概念相同，但使用方式有差异：
+
+| 对比项 | C++ `std::optional<T>` | Java `Optional<T>` |
+|--------|------------------------|---------------------|
+| 引入版本 | C++17 (2017) | Java 8 (2014) |
+| 检查有值 | `opt.has_value()` 或 `if (opt)` | `opt.isPresent()` |
+| 获取值 | `opt.value()` 或 `*opt` | `opt.get()` |
+| 获取值或默认 | `opt.value_or(default)` | `opt.orElse(default)` |
+| 无值时抛异常 | `opt.value()` → `bad_optional_access` | `opt.get()` → `NoSuchElementException` |
+| 函数式操作 | 无（需手动检查） | `opt.map()`, `opt.filter()`, `opt.flatMap()` |
+| 存储基本类型 | `std::optional<int>` 可以 | `OptionalInt`（不能用 `Optional<int>`） |
+| 值的位置 | 存储在 optional 内部 | 存储在 optional 内部 |
+| 推荐作为字段 | 可以 | 不推荐（`Optional` 主要用于返回值） |
+
+**C++ std::optional 示例：**
+
+```cpp
+std::optional<RawAddress> addr = RawAddress::FromString(str);
+if (addr.has_value()) {
+    connect(addr.value());
+} else {
+    auto default_addr = addr.value_or(RawAddress::kEmpty);
+}
+```
+
+**Java Optional 示例：**
+
+```java
+Optional<RawAddress> addr = RawAddress.fromString(str);
+if (addr.isPresent()) {
+    connect(addr.get());
+} else {
+    RawAddress defaultAddr = addr.orElse(RawAddress.EMPTY);
+}
+// Java 独有的函数式风格：
+addr.ifPresent(this::connect);
+RawAddress result = addr.orElseGet(RawAddress::empty);
+```
+
+> **关键区别**：Java 的 `Optional` 有丰富的函数式 API（`map`、`filter`、`flatMap`、`ifPresent` 等），C++ 的 `std::optional` 更轻量，只提供基本操作。Java 社区推荐 `Optional` 只用作方法返回值，不建议作为字段类型；C++ 没有这个限制。
+
 ---
 
 ## 11. std::variant（C++17）
@@ -1768,6 +2141,68 @@ void set_volume(const VolumeControlTarget& target, uint8_t volume) {
 - 自动管理类型标签，不会误读
 - 支持非平凡类型（如 `std::string`）
 - 配合 `std::visit` 和 `if constexpr` 使用非常优雅
+
+### ☕ Java 类比
+
+Java **没有**与 `std::variant` 直接等价的机制。Java 是面向对象语言，通常用继承/多态来处理"多种类型选一种"的场景。
+
+| 对比项 | C++ `std::variant` | Java |
+|--------|---------------------|------|
+| 类型安全联合体 | `std::variant<A, B>` | 无直接等价 |
+| 访问方式 | `std::get`, `std::visit` | 无 |
+| 替代方案 1 | — | 继承体系 + 多态（重量级） |
+| 替代方案 2 | — | 密封类 + 模式匹配（Java 17+） |
+| 替代方案 3 | — | `Object` 类型 + `instanceof` 检查 |
+| 内存开销 | 栈上，最大成员 + 标签 | 堆上（每个对象独立分配） |
+
+**C++ std::variant 示例：**
+
+```cpp
+std::variant<RawAddress, int> target;
+target = RawAddress{0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+std::visit([](auto&& arg) {
+    using T = std::decay_t<decltype(arg)>;
+    if constexpr (std::is_same_v<T, RawAddress>) {
+        set_device_volume(arg, volume);
+    } else if constexpr (std::is_same_v<T, int>) {
+        set_group_volume(arg, volume);
+    }
+}, target);
+```
+
+**Java 的替代方案（密封类 + 模式匹配，Java 17+）：**
+
+```java
+sealed interface VolumeTarget permits DeviceTarget, GroupTarget {}
+record DeviceTarget(RawAddress address) implements VolumeTarget {}
+record GroupTarget(int groupId) implements VolumeTarget {}
+
+// 使用模式匹配
+void setVolume(VolumeTarget target, int volume) {
+    switch (target) {
+        case DeviceTarget(var addr) -> setDeviceVolume(addr, volume);
+        case GroupTarget(var id)    -> setGroupVolume(id, volume);
+    }
+}
+```
+
+**Java 的替代方案（传统继承）：**
+
+```java
+abstract class VolumeTarget {}
+class DeviceTarget extends VolumeTarget { RawAddress address; }
+class GroupTarget extends VolumeTarget { int groupId; }
+
+void setVolume(VolumeTarget target, int volume) {
+    if (target instanceof DeviceTarget dt) {
+        setDeviceVolume(dt.address, volume);
+    } else if (target instanceof GroupTarget gt) {
+        setGroupVolume(gt.groupId, volume);
+    }
+}
+```
+
+> **关键区别**：C++ 的 `variant` 是值类型，存储在栈上，零堆分配开销。Java 的替代方案都需要堆分配对象。Java 17+ 的密封类（sealed class）+ 模式匹配是最接近 `variant` 的特性，但仍然基于继承体系。
 
 ---
 

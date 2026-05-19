@@ -76,6 +76,33 @@ management_handler_ = new Handler(management_thread_);
 
 这就是为什么蓝牙协议栈中大量使用了接下来要介绍的并发原语。
 
+### ☕ Java 类比
+
+Java 的多线程模型与 C++ 有显著差异，Java 从语言层面提供了更丰富的并发支持：
+
+| 概念 | C++ | Java |
+|------|-----|------|
+| 线程创建 | `std::thread` | `Thread` / `ExecutorService` |
+| 线程优先级 | OS 调度，不保证 | `Thread.setPriority()` |
+| 线程池 | 无标准库支持 | `ExecutorService` / `ThreadPoolExecutor` |
+| 竞态条件 | 同样存在 | 同样存在 |
+| 内存模型 | C++11 内存模型 | Java Memory Model (JMM) |
+
+```cpp
+// C++：蓝牙协议栈创建线程
+stack_thread_ = new os::Thread("gd_stack_thread", os::Thread::Priority::REAL_TIME);
+```
+
+```java
+// Java：Android 蓝牙服务中的线程创建
+HandlerThread stackThread = new HandlerThread("gd_stack_thread",
+    Process.THREAD_PRIORITY_URGENT_DISPLAY);
+stackThread.start();
+Handler stackHandler = new Handler(stackThread.getLooper());
+```
+
+**关键差异**：C++ 的 `std::thread` 是轻量级的线程封装，需要手动管理生命周期；Java 的 `HandlerThread` 封装了 Looper 消息循环，更接近蓝牙协议栈中 `Thread` + `Reactor` 的组合。
+
 ---
 
 ## 2. std::mutex 与 std::lock_guard
@@ -194,6 +221,47 @@ void aclDataReceived(const std::vector<uint8_t>& packet) override {
 }
 ```
 
+### ☕ Java 类比
+
+C++ 的 `std::mutex` + `std::lock_guard` 在 Java 中对应 `synchronized` 关键字和 `ReentrantLock`：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `std::mutex` | `synchronized` / `ReentrantLock` | 互斥锁 |
+| `std::lock_guard` | `synchronized` 块 | RAII 自动释放 |
+| `std::unique_lock` | `ReentrantLock.lock()/unlock()` | 更灵活的锁管理 |
+| 手动 `lock()/unlock()` | 无等价（Java 不鼓励） | Java 推荐用 `synchronized` |
+
+```cpp
+// C++：lock_guard 保护共享数据
+std::lock_guard<std::mutex> lock(mutex_);
+tasks_->emplace(std::move(closure));
+// 离开作用域自动解锁
+```
+
+```java
+// Java 方式1：synchronized 块（最常用）
+synchronized (this) {
+    tasks.add(closure);
+}  // 离开块自动释放锁
+
+// Java 方式2：ReentrantLock（更灵活）
+private final ReentrantLock lock = new ReentrantLock();
+public void post(Runnable closure) {
+    lock.lock();
+    try {
+        tasks.add(closure);
+    } finally {
+        lock.unlock();  // 必须在 finally 中释放
+    }
+}
+```
+
+**关键差异**：
+- C++ 的 `lock_guard` 利用 RAII 在析构时自动解锁，即使抛出异常也安全
+- Java 的 `synchronized` 由 JVM 保证自动释放，但 `ReentrantLock` 必须在 `finally` 块中手动 `unlock()`
+- C++ 的 `mutex` 不支持重入（同线程重复加锁会死锁），Java 的 `synchronized` 和 `ReentrantLock` 默认可重入
+
 ---
 
 ## 3. std::recursive_mutex
@@ -297,6 +365,40 @@ static std::recursive_mutex config_lock;  // protects operations on |config|.
 ```
 
 > ⚠️ **注意**：`recursive_mutex` 虽然解决了重入问题，但也可能掩盖设计缺陷。如果可能，更好的做法是重构代码，将需要锁保护的操作提取为内部函数（不加锁），外部统一加锁调用。
+
+### ☕ Java 类比
+
+C++ 的 `std::recursive_mutex` 在 Java 中对应 `ReentrantLock`（默认可重入）和 `synchronized`（天然可重入）：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `std::recursive_mutex` | `ReentrantLock` | 都支持同一线程重复加锁 |
+| `std::mutex`（不可重入） | 无等价 | Java 的锁**默认都可重入** |
+| `lock_guard<recursive_mutex>` | `synchronized` 块 | 自动释放 |
+| 持有计数归零才释放 | `ReentrantLock.getHoldCount()` | Java 可查询持有次数 |
+
+```cpp
+// C++：需要显式选择 recursive_mutex
+std::recursive_mutex bgconn_dev_mutex;  // 必须用 recursive_mutex
+
+void on_app_deregistered() {
+  std::lock_guard<std::recursive_mutex> lock(bgconn_dev_mutex);  // 第1次加锁
+  remove_all_clients(address);  // 内部也加锁 → 第2次加锁（同一线程）
+}
+```
+
+```java
+// Java：synchronized 天然可重入，无需特殊处理
+private final Object lock = new Object();  // 普通锁即可
+
+void onAppDeregistered() {
+    synchronized (lock) {           // 第1次加锁
+        removeAllClients(address);  // 内部也 synchronized(lock) → 第2次加锁，OK！
+    }
+}
+```
+
+**关键差异**：Java 的 `synchronized` 和 `ReentrantLock` **默认就是可重入的**，不存在 C++ 中 `mutex` vs `recursive_mutex` 的选择问题。C++ 之所以区分两种 mutex，是因为不可重入的 mutex 性能略好，且能帮助发现设计缺陷。
 
 ---
 
@@ -437,6 +539,48 @@ class Handler {
   }
 };
 ```
+
+### ☕ Java 类比
+
+C++ 的线程安全注解（Chromium/Clang 特有）在 Java 中对应 `@GuardedBy` 注解和 Error Prone / Android Lint 检查工具：
+
+| C++ 注解 | Java 对应 | 说明 |
+|----------|----------|------|
+| `GUARDED_BY(mutex_)` | `@GuardedBy("mutex")` | 变量必须在持锁时访问 |
+| `EXCLUSIVE_LOCKS_REQUIRED(mutex_)` | `@GuardedBy("mutex")`（方法级） | 调用前必须持锁 |
+| `LOCKS_EXCLUDED(mutex_)` | 无直接等价 | Java 工具不检查"不能持锁" |
+| Clang 线程安全分析 | Error Prone / Android Lint | 编译期/构建期检查 |
+
+```cpp
+// C++：Chromium 线程安全注解
+std::queue<OnceClosure>* tasks_ GUARDED_BY(mutex_);
+bool was_cleared() const EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+bool IsCleared() const LOCKS_EXCLUDED(mutex_);
+```
+
+```java
+// Java：@GuardedBy 注解（来自 javax.annotation.concurrent / AndroidX）
+@GuardedBy("mutex")
+private Queue<Runnable> tasks;
+
+// 方法级：调用者必须持锁
+@GuardedBy("mutex")
+private boolean wasCleared() {
+    return tasks == null;
+}
+
+// 公共方法：内部自己加锁
+public boolean isCleared() {
+    synchronized (mutex) {
+        return tasks == null;
+    }
+}
+```
+
+**关键差异**：
+- C++ 的注解由 Clang 编译器在编译时检查，Java 的 `@GuardedBy` 由 Error Prone 或 Android Lint 在构建时检查
+- C++ 有 `LOCKS_EXCLUDED`（调用者不能持锁），Java 工具通常不检查此约束
+- Android 开发中，`@GuardedBy` 是 AndroidX 注解库的一部分，广泛用于 Framework 层代码
 
 ---
 
@@ -603,6 +747,44 @@ struct thread_t {
     └── 使用 std::mutex（atomic 无法保护多个变量的一致性）
 ```
 
+### ☕ Java 类比
+
+C++ 的 `std::atomic` 在 Java 中对应 `java.util.concurrent.atomic` 包中的原子类：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `std::atomic<bool>` | `AtomicBoolean` | 布尔原子变量 |
+| `std::atomic<int>` | `AtomicInteger` | 整数原子变量 |
+| `std::atomic_uint8_t` | 无直接等价 | Java 用 `AtomicInteger` 替代 |
+| `std::atomic_uint16_t` | 无直接等价 | Java 用 `AtomicInteger` 替代 |
+| `exchange()` | `getAndSet()` | 原子交换 |
+| `compare_exchange_weak/strong` | `compareAndSet()` (CAS) | 比较并交换 |
+| `memory_order_relaxed` 等 | `VarHandle` 内存序 | Java 9+ 支持 |
+| `fetch_add()` | `getAndAdd()` | 原子加法 |
+
+```cpp
+// C++：原子变量 + exchange
+std::atomic_bool enqueue_registered_ = false;
+if (!enqueue_registered_.exchange(true)) {
+    RegisterEnqueue(handler, callback);
+}
+```
+
+```java
+// Java：AtomicBoolean + compareAndSet
+private final AtomicBoolean enqueueRegistered = new AtomicBoolean(false);
+
+if (enqueueRegistered.compareAndSet(false, true)) {
+    // CAS 成功：从 false 变为 true，执行注册
+    registerEnqueue(handler, callback);
+}
+```
+
+**关键差异**：
+- C++ 的 `std::atomic` 是模板，可用于任意简单类型；Java 的原子类是具体类（`AtomicInteger`、`AtomicLong`、`AtomicReference` 等）
+- C++ 支持细粒度的内存序控制（`memory_order_relaxed` 等），Java 默认使用 `volatile` 语义（类似 `memory_order_seq_cst`），Java 9+ 通过 `VarHandle` 支持更细粒度控制
+- Java 的 `AtomicInteger` 提供了 `incrementAndGet()` 等便捷方法，C++ 需要用 `fetch_add()` + 1
+
 ---
 
 ## 6. std::promise 和 std::future
@@ -765,6 +947,48 @@ if (status == std::future_status::ready) {
 auto status = future.wait_until(std::chrono::system_clock::now() + 2s);
 ```
 
+### ☕ Java 类比
+
+C++ 的 `std::promise/future` 在 Java 中对应 `CompletableFuture`：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `std::promise<T>` | `CompletableFuture<T>` | 值的提供者 |
+| `std::future<T>` | `CompletableFuture<T>` | Java 中 promise 和 future 是同一个对象 |
+| `promise.set_value()` | `future.complete(value)` | 设置结果值 |
+| `future.get()` | `future.get()` | 阻塞获取结果 |
+| `future.wait_for(timeout)` | `future.get(timeout, TimeUnit)` | 超时等待 |
+| `std::future_status::ready` | 正常返回 | 值已就绪 |
+| `std::future_status::timeout` | `TimeoutException` | 超时 |
+
+```cpp
+// C++：promise/future 用于跨线程同步
+std::promise<void> promise;
+auto future = promise.get_future();
+handler_->Post(BindOnce(&std::promise<void>::set_value, Unretained(&promise)));
+if (future.wait_for(std::chrono::milliseconds(2000)) == std::future_status::ready) {
+    // 完成
+}
+```
+
+```java
+// Java：CompletableFuture 用于跨线程同步
+CompletableFuture<Void> future = new CompletableFuture<>();
+handler.post(() -> future.complete(null));
+try {
+    future.get(2000, TimeUnit.MILLISECONDS);
+    // 完成
+} catch (TimeoutException e) {
+    // 超时
+}
+```
+
+**关键差异**：
+- C++ 将 promise（写端）和 future（读端）分为两个对象，Java 合并为一个 `CompletableFuture`
+- Java 的 `CompletableFuture` 功能更强大，支持链式调用（`thenApply`、`thenCompose` 等）
+- C++ 的 `future.get()` 只能调用一次，Java 的 `CompletableFuture.get()` 可以多次调用
+- 在 Android 蓝牙 Framework 层，`CompletableFuture` 常用于异步操作的结果回调
+
 ---
 
 ## 7. std::chrono (时间库)
@@ -901,6 +1125,42 @@ std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 // 5. 记录时间戳
 auto creation_time = std::chrono::system_clock::now();
 ```
+
+### ☕ Java 类比
+
+C++ 的 `std::chrono` 在 Java 中对应 `java.time` 包（Java 8+）：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `std::chrono::milliseconds` | `Duration.ofMillis()` | 毫秒时长 |
+| `std::chrono::seconds` | `Duration.ofSeconds()` | 秒时长 |
+| `std::chrono::microseconds` | `Duration.ofNanos(micros * 1000)` | 微秒（Java 无直接支持） |
+| `std::chrono::system_clock::now()` | `Instant.now()` | 系统时钟当前时间 |
+| `std::chrono::steady_clock::now()` | `System.nanoTime()` | 单调时钟 |
+| `time_point<system_clock>` | `Instant` | 时间点 |
+| `duration_cast<seconds>(ms)` | `duration.toSeconds()` | 时长转换 |
+| `constexpr` 编译期常量 | `static final` 常量 | Java 无编译期计算 |
+
+```cpp
+// C++：chrono 在协议栈中的用法
+constexpr std::chrono::milliseconds kTimeout = std::chrono::milliseconds(2000);
+auto creation_time = std::chrono::system_clock::now();
+future.wait_for(std::chrono::milliseconds(3000));
+std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+```
+
+```java
+// Java：java.time 在蓝牙服务中的等价用法
+private static final Duration TIMEOUT = Duration.ofMillis(2000);
+Instant creationTime = Instant.now();
+future.get(3000, TimeUnit.MILLISECONDS);  // 或 future.orTimeout(3, TimeUnit.SECONDS)
+Thread.sleep(2000);  // 或 LockSupport.parkNanos(Duration.ofMillis(2000).toNanos())
+```
+
+**关键差异**：
+- C++ 的 `constexpr` 允许编译期计算时间常量，Java 的 `static final` 是运行时常量
+- C++ 区分多种时钟（`system_clock`、`steady_clock`、`high_resolution_clock`），Java 主要用 `Instant`（系统时钟）和 `System.nanoTime()`（单调时钟）
+- Java 的 `Duration` 是不可变对象，C++ 的 `std::chrono::milliseconds` 是简单值类型
 
 ---
 
@@ -1137,6 +1397,39 @@ void Handler::Clear() {
 │  主线程 (do_in_main_thread)                                  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### ☕ Java 类比
+
+C++ 的 Handler 线程模型（Reactor + Handler + Post）在 Android Java 层有直接对应——`Handler`/`Looper` 机制：
+
+| C++ (GD 架构) | Java (Android) | 说明 |
+|---------------|----------------|------|
+| `Reactor` (epoll 事件循环) | `Looper` (MessageQueue 循环) | 事件驱动核心 |
+| `Handler::Post(OnceClosure)` | `Handler.post(Runnable)` | 投递任务到目标线程 |
+| `Handler::Call(functor, args)` | `Handler.post(() -> func(args))` | 带参数的任务投递 |
+| `Handler::PostWithDelay(closure, delay)` | `Handler.postDelayed(runnable, delayMs)` | 延迟投递 |
+| `Handler::Synchronize(timeout)` | 无直接等价 | Java 用 `CountDownLatch` 模拟 |
+| `Thread` + `Reactor` | `HandlerThread` + `Looper` | 带消息循环的线程 |
+| `event_->Notify()` (eventfd) | `MessageQueue.enqueueMessage()` | 唤醒事件循环 |
+
+```cpp
+// C++：GD Handler 投递任务
+handler_->Post(common::BindOnce(&MyClass::onConnect, common::Unretained(this), address));
+handler_->PostWithDelay(common::BindOnce(&MyClass::onTimeout, weak_ptr, addr),
+                         std::chrono::seconds(5));
+```
+
+```java
+// Java：Android Handler 投递任务
+handler.post(() -> myClass.onConnect(address));
+handler.postDelayed(() -> myClass.onTimeout(addr), 5000);
+```
+
+**关键差异**：
+- C++ 的 `Handler` 使用 `epoll` + `eventfd` 实现，Java 的 `Looper` 使用 `MessageQueue` + 管道/epoll
+- C++ 的 `OnceClosure` 只能执行一次，Java 的 `Runnable` 可以被多次 `post`
+- C++ 的 `Synchronize()` 通过 `promise/future` 实现同步等待，Java 中通常用 `CountDownLatch` 或 `Future.get()`
+- Android 的 `Handler` 是 Java 层蓝牙 Framework 与 C++ 协议栈通信的核心桥梁
 
 ---
 

@@ -92,6 +92,34 @@ bool operator<(const MyClass& lhs, const MyClass& rhs);
 | 对称运算符 `+` `*` 等 | 推荐非成员函数（支持双向隐式转换） |
 | 复合赋值 `+=` `-=` 等 | 推荐成员函数 |
 
+### ☕ Java 类比
+
+Java **不支持运算符重载**（唯一的例外是 `String` 的 `+` 运算符）。这是 Java 设计者有意为之的简化决策——运算符重载虽然让代码更直观，但也容易滥用导致代码难以理解。
+
+| 特性 | C++ | Java |
+|------|-----|------|
+| 运算符重载 | ✅ 全面支持 | ❌ 仅 `String +` |
+| 自定义 `a < b` | `operator<` | `Comparable<T>` 接口 |
+| 自定义 `a == b` | `operator==` | `equals()` 方法 |
+| 成员函数 vs 非成员函数 | 两种方式均可 | 无此概念 |
+| `=` `()` `[]` `->` 必须成员函数 | ✅ | 无等价 |
+
+**Java 的替代方案**：用命名方法代替运算符语法：
+
+```cpp
+// C++：运算符重载
+if (addr1 < addr2) { ... }
+if (addr1 == addr2) { ... }
+```
+
+```java
+// Java：使用 Comparable 接口和 equals 方法
+if (addr1.compareTo(addr2) < 0) { ... }
+if (addr1.equals(addr2)) { ... }
+```
+
+Java 的 `Comparable<T>` 接口等价于 C++ 的 `operator<`，`equals()` 方法等价于 `operator==`。但 Java 无法让 `==` 运算符本身调用 `equals()`——`==` 在 Java 中比较的是引用（地址），而非内容。
+
 ---
 
 ## 2. 比较运算符重载
@@ -174,6 +202,50 @@ auto operator<=>(const RawAddress&) const = default;
 
 蓝牙协议栈中的 `RawAddress` 和 `Uuid` 目前仍采用手动实现的方式，这是为了兼容 C++17 及更早的标准。
 
+### ☕ Java 类比
+
+C++ 的比较运算符重载在 Java 中通过 `Comparable<T>` 接口和 `Comparator<T>` 接口实现：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `operator<` | `Comparable<T>.compareTo()` | 用于 `TreeMap`/`TreeSet` 排序 |
+| `operator==` | `equals()` | 用于相等比较 |
+| 六个运算符手动推导 | `compareTo` 返回值推导 | `compareTo < 0` → 小于，`== 0` → 等于，`> 0` → 大于 |
+| C++20 `<=>` 太空船运算符 | `compareTo()` 本身 | Java 的 `compareTo` 天然就是三路比较 |
+
+```cpp
+// C++：RawAddress 的比较运算符族
+bool operator<(const RawAddress& rhs) const;
+bool operator==(const RawAddress& rhs) const;
+bool operator>(const RawAddress& rhs) const;   // rhs < *this
+bool operator<=(const RawAddress& rhs) const;  // !(*this > rhs)
+```
+
+```java
+// Java：用 Comparable 接口实现等价功能
+public class RawAddress implements Comparable<RawAddress> {
+    private byte[] address = new byte[6];
+
+    @Override
+    public int compareTo(RawAddress other) {
+        // 一次实现，等价于 C++ 的全部六个比较运算符
+        for (int i = 0; i < 6; i++) {
+            int cmp = Byte.compareUnsigned(address[i], other.address[i]);
+            if (cmp != 0) return cmp;
+        }
+        return 0;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (!(obj instanceof RawAddress)) return false;
+        return compareTo((RawAddress) obj) == 0;
+    }
+}
+```
+
+**关键差异**：C++ 的 `operator<` 使类型可直接用于 `std::map`；Java 的 `Comparable<T>` 使类型可用于 `TreeMap`。C++ 需要手动实现六个运算符（或用 C++20 `<=>`），Java 只需一个 `compareTo` 方法即可推导出全部比较关系。
+
 ---
 
 ## 3. 流插入运算符重载 operator<<
@@ -231,6 +303,43 @@ LOG(INFO) << "Service UUID: " << uuid;  // 输出：Service UUID: 00001234-0000-
 ```
 
 在蓝牙协议栈中，日志系统大量使用 `operator<<` 来输出自定义类型。这种模式使得日志代码简洁且类型安全。
+
+### ☕ Java 类比
+
+C++ 的 `operator<<` 用于将对象输出到流，Java 用 `toString()` 方法实现类似功能：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `operator<<` | `toString()` | 将对象转为字符串表示 |
+| `std::cout << obj` | `System.out.println(obj)` | 自动调用 `toString()` |
+| `LOG(INFO) << uuid` | `Log.i(TAG, uuid.toString())` | 日志输出 |
+| 非成员函数，需 `friend` 访问私有成员 | 成员方法，天然访问私有成员 | Java 无需 friend |
+| 返回 `ostream&` 支持链式调用 | 无需返回值，`println` 自行处理 | Java 更简单 |
+
+```cpp
+// C++：流插入运算符（非成员函数）
+inline std::ostream& operator<<(std::ostream& os, const Uuid& a) {
+  os << a.ToString();
+  return os;  // 必须返回 os 以支持 cout << a << b;
+}
+```
+
+```java
+// Java：toString() 方法（成员方法）
+public class Uuid {
+    @Override
+    public String toString() {
+        // 返回形如 "00001234-0000-1000-8000-00805f9b34fb" 的字符串
+        return formatUuid();
+    }
+}
+
+// 使用
+System.out.println("Service UUID: " + uuid);  // 自动调用 toString()
+Log.i(TAG, "Service UUID: " + uuid);           // 同上
+```
+
+**Java 的优势**：`toString()` 是 `Object` 的方法，所有类都有。`System.out.println()` 和字符串拼接 `+` 都会自动调用它，无需额外定义非成员函数。C++ 之所以需要 `operator<<`，是因为 C++ 的 I/O 系统基于流（stream），而非字符串拼接。
 
 ---
 
@@ -341,6 +450,59 @@ struct std::hash<RawAddress> {
 2. **哈希质量直接影响哈希表性能**。差的哈希函数会导致大量冲突，使 `unordered_map` 退化为链表。
 3. **`operator==` 必须与 `std::hash` 一致**：如果 `a == b` 为真，则 `hash(a) == hash(b)` 必须为真。反之不要求。
 
+### ☕ Java 类比
+
+C++ 的 `std::hash` 特化在 Java 中对应 `hashCode()` 和 `equals()` 方法：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `std::hash<T>` 特化 | `hashCode()` | 计算哈希值 |
+| `operator==` | `equals(Object)` | 判断相等 |
+| `std::unordered_map` | `HashMap` | 哈希表容器 |
+| 向 `std` 命名空间添加特化 | 重写 `Object` 的方法 | Java 更自然 |
+| 两个独立机制需手动保持一致 | `hashCode`/`equals` 必须一起重写 | 规则相同 |
+
+```cpp
+// C++：需要单独特化 std::hash
+namespace std {
+template <>
+struct hash<RawAddress> {
+  std::size_t operator()(const RawAddress& val) const {
+    uint64_t int_addr = 0;
+    memcpy(reinterpret_cast<uint8_t*>(&int_addr), val.address.data(), 6);
+    return std::hash<uint64_t>{}(int_addr);
+  }
+};
+}
+```
+
+```java
+// Java：重写 hashCode() 和 equals()
+public class RawAddress {
+    private byte[] address = new byte[6];
+
+    @Override
+    public int hashCode() {
+        // 将 6 字节地址映射为 int 哈希值
+        return Arrays.hashCode(address);
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (!(obj instanceof RawAddress)) return false;
+        return Arrays.equals(address, ((RawAddress) obj).address);
+    }
+}
+
+// 使用
+HashMap<RawAddress, DeviceInfo> devices = new HashMap<>();  // 自动使用 hashCode/equals
+```
+
+**关键差异**：
+- C++ 的 `std::hash` 是外部特化（在 `std` 命名空间中），`operator==` 是另一个独立机制，需开发者确保一致性
+- Java 的 `hashCode()` 和 `equals()` 都是对象自身的方法，IDE 会提醒必须一起重写
+- Java 的 `hashCode()` 返回 `int`（32位），C++ 的 `std::hash` 返回 `size_t`（通常64位）
+
 ---
 
 ## 5. std::formatter 特化 (C++20)
@@ -421,6 +583,51 @@ struct formatter<RawAddress> : formatter<std::string> {
 |------|----------|--------|--------|
 | 继承 `ostream_formatter` | 已有 `operator<<`，直接复用 | 1 行 | 低（完全依赖 `operator<<`） |
 | 继承 `formatter<string>` + 重写 `format` | 需要自定义格式化逻辑 | 数行 | 高（可自由控制输出内容） |
+
+### ☕ Java 类比
+
+C++20 的 `std::formatter` 特化在 Java 中对应 `String.format()` + `toString()` 或 `Formattable` 接口：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `std::formatter<T>` 特化 | `toString()` | 基本格式化 |
+| `std::format("{}", obj)` | `String.format("%s", obj)` | 格式化字符串 |
+| 继承 `ostream_formatter` | 无需等价（`toString` 天然可用） | 复用已有输出 |
+| 继承 `formatter<string>` + 重写 `format` | 实现 `Formattable` 接口 | 自定义格式化 |
+| `{:>20}` 宽度/对齐控制 | `%20s` 格式化说明符 | Java 更简洁 |
+
+```cpp
+// C++20：std::formatter 特化
+namespace std {
+template <>
+struct formatter<RawAddress> : formatter<std::string> {
+  template <class Context>
+  typename Context::iterator format(const RawAddress& address, Context& ctx) const {
+    std::string repr = address.ToRedactedStringForLogging();
+    return std::formatter<std::string>::format(repr, ctx);
+  }
+};
+}
+
+// 使用
+std::cout << std::format("Address: {}", address);
+```
+
+```java
+// Java：toString() + String.format()
+public class RawAddress {
+    @Override
+    public String toString() {
+        return toRedactedStringForLogging();  // 脱敏输出
+    }
+}
+
+// 使用
+System.out.println(String.format("Address: %s", address));     // 自动调用 toString()
+System.out.println(String.format("Address: %20s", address));   // 右对齐，宽度20
+```
+
+**Java 不需要 `formatter` 特化的原因**：Java 的 `String.format()` 通过 `%s` 调用对象的 `toString()`，而 `toString()` 是 `Object` 的方法，天然可重写。C++ 之所以需要 `std::formatter` 特化，是因为 `std::format` 不知道如何格式化自定义类型，必须显式告诉它。
 
 ---
 
@@ -576,6 +783,52 @@ private:
 | **友元关系应反映真实耦合** | friend 类之间应该确实存在紧密的设计耦合 |
 | **文档化友元关系** | 在注释中说明为什么需要 friend |
 
+### ☕ Java 类比
+
+Java **没有友元（friend）机制**。Java 的访问控制基于包（package）和嵌套类，而非 C++ 的友元声明：
+
+| C++ 机制 | Java 替代方案 | 说明 |
+|----------|-------------|------|
+| `friend class` | 包级访问（package-private） | 同包内的类可以访问 |
+| `friend class` | 内部类/嵌套类 | 内部类可访问外部类的私有成员 |
+| `friend 函数` | 无直接等价 | 需通过上述方式间接实现 |
+| `friend 模板类` | 无等价 | Java 泛型不支持此模式 |
+
+```cpp
+// C++：friend 允许特定类访问私有成员
+class Handler {
+private:
+  std::queue<OnceClosure>* tasks_;  // 私有
+  friend class Queue;               // Queue 可以访问 tasks_
+  friend class Alarm;               // Alarm 可以访问私有成员
+};
+```
+
+```java
+// Java 方案1：包级访问（同包的类可以访问）
+// 将 Handler 和 Queue 放在同一个包中，使用 package-private 可见性
+package bluetooth.os;
+
+public class Handler {
+    // package-private：同包的 Queue、Alarm 可以访问
+    Queue<Runnable> tasks;
+}
+
+// Java 方案2：内部类
+public class Handler {
+    private Queue<Runnable> tasks;
+
+    // 内部类天然可以访问外部类的私有成员
+    public class QueueAccessor {
+        public void postTask(Runnable task) {
+            tasks.add(task);  // 直接访问私有成员
+        }
+    }
+}
+```
+
+**Java 不需要 friend 的原因**：Java 的包（package）机制提供了一种更粗粒度的访问控制——同包内的类可以访问彼此的 package-private 成员。对于更精细的控制，Java 使用内部类。C++ 没有"包"的概念，因此需要 `friend` 来实现类似功能。
+
 ---
 
 ## 7. 赋值运算符重载
@@ -722,6 +975,48 @@ C++ 资源管理有两条重要规则：
 | `Uuid` | Rule of Zero | 内部只有 `std::array`，默认行为正确 |
 | `EattExtension` | 删除拷贝 | 单例 + unique_ptr，显式删除拷贝操作 |
 | `Handler` | 删除拷贝 | 绑定线程资源，显式删除拷贝操作 |
+
+### ☕ Java 类比
+
+Java **不支持自定义赋值运算符**。Java 的赋值 `=` 永远是引用赋值（浅拷贝），无法重载：
+
+| C++ 机制 | Java 对应 | 说明 |
+|----------|----------|------|
+| `operator=` 拷贝赋值 | 无等价 | Java 赋值是引用赋值 |
+| `operator=(const T&) = delete` | 无需等价 | Java 引用天然安全 |
+| `operator=(T&&)` 移动赋值 | 无等价 | Java 有 GC，不需要移动语义 |
+| `= default` | 无需等价 | Java 对象赋值就是引用赋值 |
+| 自赋值检查 `if (this != &rhs)` | 无需等价 | Java 引用赋值天然安全 |
+| Rule of Five / Rule of Zero | 无需等价 | Java 有 GC，无资源管理问题 |
+
+```cpp
+// C++：禁止拷贝赋值（不可复制类）
+class EattExtension {
+public:
+  EattExtension(const EattExtension&) = delete;
+  EattExtension& operator=(const EattExtension&) = delete;
+};
+```
+
+```java
+// Java：不需要显式禁止拷贝赋值
+// Java 的赋值只是引用赋值，不会复制对象内容
+EattExtension e1 = EattExtension.getInstance();
+EattExtension e2 = e1;  // e2 和 e1 指向同一个对象，不是拷贝
+
+// 如果需要禁止克隆，重写 clone() 并抛出异常
+public class EattExtension {
+    @Override
+    protected Object clone() throws CloneNotSupportedException {
+        throw new CloneNotSupportedException("EattExtension is a singleton");
+    }
+}
+```
+
+**Java 不需要自定义赋值运算符的原因**：
+1. Java 的赋值 `=` 是引用赋值，不会复制对象内容，因此不存在深拷贝/浅拷贝问题
+2. Java 有垃圾回收器（GC），不需要手动管理资源释放，因此不需要移动语义
+3. Java 没有值语义的概念——所有对象都是引用类型，赋值只是复制引用
 
 ---
 

@@ -63,6 +63,40 @@ Lambda 表达式本质上就是**一个匿名的函数对象**。编译器在背
 
 理解这一点很重要：Lambda 不是什么黑魔法，它只是编译器帮你自动生成函数对象的**语法糖**。
 
+### ☕ Java 类比
+
+Java 8 (2014) 引入了 Lambda 表达式，与 C++11 (2011) 的 Lambda 功能相似，但语法和捕获机制不同：
+
+| 对比项 | C++ Lambda | Java Lambda |
+|--------|------------|-------------|
+| 语法 | `[capture](params) { body }` | `(params) -> { body }` |
+| 类型 | 编译器生成的唯一匿名类 | 函数式接口的实现 |
+| 捕获列表 | 显式指定 `[=]`, `[&]`, `[var]` | 自动捕获（effective final） |
+| 修改捕获变量 | `[&var]` 或 `[var] mutable` | 不允许（变量必须是 effectively final） |
+| 无参无返回 | `[](){}` | `() -> {}` |
+| 类型推断 | 返回类型可自动推导 | 函数式接口决定签名 |
+
+**C++ Lambda 示例：**
+
+```cpp
+auto iter = std::find_if(devices.begin(), devices.end(),
+    [&lcid](const eatt_device& ed) {
+        auto it = ed.eatt_channels.find(lcid);
+        return it != ed.eatt_channels.end();
+    });
+```
+
+**Java Lambda 示例：**
+
+```java
+var iter = devices.stream()
+    .filter(ed -> ed.getChannels().containsKey(lcid))
+    .findFirst();
+// Java 自动捕获 lcid（必须是 effectively final）
+```
+
+> **关键区别**：C++ 需要显式声明捕获列表，精确控制每个变量是按值还是按引用捕获。Java 自动捕获，但要求变量是 effectively final（不可修改），更安全但灵活性较低。
+
 ---
 
 ## 2. Lambda 基础语法
@@ -172,6 +206,42 @@ int count = 0;
 ```
 
 > **注意**：`mutable` 修改的是 Lambda 内部的副本，不会影响外部的原始变量。如果需要修改外部变量，应该按引用捕获 `[&count]`。
+
+### ☕ Java 类比
+
+Java Lambda 的参数列表和返回类型与 C++ 类似，但 `mutable` 概念不存在：
+
+| 对比项 | C++ Lambda | Java Lambda |
+|--------|------------|-------------|
+| 参数类型 | 显式或 `auto`（C++14） | 显式或 `var`（Java 11） |
+| 返回类型推导 | 自动 | 由函数式接口决定 |
+| `mutable` | 需要，修改按值捕获的副本 | 不需要（Java 没有按值捕获对象） |
+| 修改外部变量 | `[&var]` 按引用捕获 | 变量必须是 effectively final，**不能修改** |
+| 多返回类型 | 需显式指定 `-> double` | 不适用（接口决定） |
+
+**C++ mutable 示例：**
+
+```cpp
+int count = 0;
+auto inc = [count]() mutable { return ++count; };  // 修改副本
+inc();  // 返回 1，外部 count 仍为 0
+```
+
+**Java 的替代方案：**
+
+```java
+// Java Lambda 不能修改局部变量，但可以用可变引用类型：
+int[] count = {0};  // 用数组包装
+Runnable inc = () -> count[0]++;  // 修改数组内容（引用不变）
+inc();
+// count[0] == 1
+
+// 或使用 AtomicInteger
+var counter = new AtomicInteger(0);
+Runnable inc2 = () -> counter.incrementAndGet();
+```
+
+> **关键区别**：C++ 的 `mutable` 允许 Lambda 修改按值捕获的副本（不影响外部）。Java 不允许 Lambda 修改捕获的局部变量，但可以通过捕获可变对象（如数组、`AtomicInteger`）间接实现。
 
 ---
 
@@ -377,6 +447,42 @@ auto lambda3 = [&, a]() { /* 所有变量可读写，a 只读 */ };
 | 捕获小类型（int, 指针等） | `[var]` 或 `[&var]` 均可 | 性能差别可忽略 |
 | 在类成员函数中访问成员 | `[this]` | 显式表明意图 |
 
+### ☕ Java 类比
+
+C++ 的捕获列表是 Java 程序员学习 C++ Lambda 时最需要适应的特性。Java 自动捕获，C++ 需要显式指定：
+
+| 对比项 | C++ 捕获列表 | Java Lambda 捕获 |
+|--------|-------------|------------------|
+| 按值捕获所有 | `[=]` | 自动（所有 effectively final 变量） |
+| 按引用捕获所有 | `[&]` | 无等价（Java 不支持引用捕获） |
+| 按值捕获指定变量 | `[var]` | 自动（仅捕获使用的变量） |
+| 按引用捕获指定变量 | `[&var]` | 无等价 |
+| 捕获 this | `[this]` 或 `[*this]` | 自动（内部类隐式持有外部类引用） |
+| 修改捕获的变量 | `[&var]` 或 `[var] mutable` | 不允许（effectively final 限制） |
+| 悬空引用风险 | 有（`[&]` 可能捕获已销毁的局部变量） | 无（GC 保证对象存活） |
+
+**C++ 捕获列表示例：**
+
+```cpp
+uint16_t lcid = 0x0040;
+auto iter = find_if(devices.begin(), devices.end(),
+    [&lcid](const eatt_device& ed) {   // 显式按引用捕获 lcid
+        return ed.eatt_channels.find(lcid) != ed.eatt_channels.end();
+    });
+```
+
+**Java Lambda 捕获示例：**
+
+```java
+int lcid = 0x0040;  // 必须是 effectively final
+var iter = devices.stream()
+    .filter(ed -> ed.getChannels().containsKey(lcid))  // 自动捕获 lcid
+    .findFirst();
+// lcid = 0x0050;  // 编译错误！捕获后不能修改
+```
+
+> **关键区别**：C++ 的捕获列表让程序员精确控制每个变量的捕获方式，但增加了出错风险（悬空引用）。Java 的 effectively final 规则更安全，但灵活性较低——无法在 Lambda 内修改局部变量。Java 不需要担心悬空引用，因为 GC 保证了对象的生命周期。
+
 ---
 
 ## 4. Lambda 与 STL 算法结合
@@ -504,6 +610,60 @@ std::sort(channels.begin(), channels.end(),
 | 出错概率 | 较高（越界、off-by-one） | 较低（算法处理边界） |
 | 可读性 | 循环逻辑混在一起 | 查找/计数/遍历逻辑分离 |
 
+### ☕ Java 类比
+
+C++ 的 STL 算法 + Lambda 对应 Java 的 Stream API + Lambda。两者都提供了函数式风格的集合操作：
+
+| C++ STL 算法 | Java Stream API | 功能 |
+|-------------|-----------------|------|
+| `std::find_if` | `.filter().findFirst()` | 条件查找 |
+| `std::count_if` | `.filter().count()` | 条件计数 |
+| `std::for_each` | `.forEach()` | 遍历执行 |
+| `std::sort` + Lambda | `.sorted(Comparator)` | 自定义排序 |
+| `std::transform` | `.map()` | 变换元素 |
+| `std::copy_if` | `.filter().collect()` | 条件拷贝 |
+| `std::any_of` | `.anyMatch()` | 是否存在满足条件的 |
+| `std::all_of` | `.allMatch()` | 是否全部满足 |
+| `std::none_of` | `.noneMatch()` | 是否全部不满足 |
+| `std::remove_if` + `erase` | `.removeIf()` | 条件删除 |
+
+**C++ STL 算法 + Lambda 示例：**
+
+```cpp
+// 查找
+auto it = std::find_if(devices.begin(), devices.end(),
+    [&bd_addr](const eatt_device& ed) { return ed.bda_ == bd_addr; });
+
+// 计数
+size_t count = std::count_if(bgconn_dev.begin(), bgconn_dev.end(),
+    [](const auto& pair) { return !pair.second.is_in_accept_list; });
+
+// 排序
+std::sort(channels.begin(), channels.end(),
+    [](const auto& a, const auto& b) { return a->tx_mtu_ > b->tx_mtu_; });
+```
+
+**Java Stream API + Lambda 示例：**
+
+```java
+// 查找
+var device = devices.stream()
+    .filter(ed -> ed.getBda().equals(bdAddr))
+    .findFirst();
+
+// 计数
+long count = bgconnDev.entrySet().stream()
+    .filter(entry -> !entry.getValue().isInAcceptList())
+    .count();
+
+// 排序
+var sorted = channels.stream()
+    .sorted((a, b) -> Integer.compare(b.getTxMtu(), a.getTxMtu()))
+    .collect(Collectors.toList());
+```
+
+> **关键区别**：C++ STL 算法直接操作迭代器（可修改原容器），Java Stream 生成新流（不修改原集合）。C++ 的 `find_if` 返回迭代器，Java 的 `filter` 返回新 Stream。Java Stream 是惰性求值的，只有终端操作（`collect`、`count` 等）才触发计算。
+
 ---
 
 ## 5. Lambda 作为变量存储
@@ -598,6 +758,34 @@ auto lambda2 = [y](int x) { return x + y; };
 
 原因：无捕获的 Lambda 不存储任何状态，等价于普通函数；有捕获的 Lambda 存储了捕获的变量，是一个有状态的对象，无法用函数指针表示。
 
+### ☕ Java 类比
+
+Java 的 Lambda 可以赋值给函数式接口类型的变量，这与 C++ 用 `auto` 存储 Lambda 类似：
+
+| 对比项 | C++ Lambda 变量 | Java Lambda 变量 |
+|--------|----------------|-----------------|
+| 存储方式 | `auto func = [](int x) { ... };` | `Function<Integer, R> func = x -> ...;` |
+| 类型 | 编译器生成的匿名类 | 函数式接口的实现 |
+| 获取类型 | `decltype(func)` | 直接使用接口类型 |
+| 全局 Lambda | `inline auto func = [](..){..};` | `static final Function<..> func = .. -> ..;` |
+| 转函数指针 | 无捕获时可以 | 不适用（Java 无函数指针） |
+
+**C++ Lambda 变量示例：**
+
+```cpp
+auto is_even = [](int n) { return n % 2 == 0; };
+int count = std::count_if(nums.begin(), nums.end(), is_even);
+```
+
+**Java Lambda 变量示例：**
+
+```java
+Predicate<Integer> isEven = n -> n % 2 == 0;
+long count = nums.stream().filter(isEven).count();
+```
+
+> **关键区别**：C++ 用 `auto` 存储 Lambda，类型是编译器生成的唯一匿名类，比 `std::function` 更高效（无运行时多态开销）。Java 的 Lambda 必须赋值给函数式接口（如 `Predicate<T>`、`Function<T,R>`），通过接口多态调用。
+
 ---
 
 ## 6. Lambda 作为回调函数
@@ -665,6 +853,45 @@ auto iter = std::find_if(sec_devices.begin(), sec_devices.end(),
 
 这种模式在蓝牙协议栈中反复出现：**查找满足某个条件的元素**。Lambda 让谓词逻辑可以就地编写，不需要定义额外的函数或函数对象。
 
+### ☕ Java 类比
+
+Java 的 Lambda 回调与 C++ 类似，但回调机制不同：
+
+| 对比项 | C++ 回调 | Java 回调 |
+|--------|---------|----------|
+| 函数指针回调 | `void (*callback)(int)` | 无（Java 无函数指针） |
+| 通用回调类型 | `std::function<void(int)>` | 函数式接口（如 `Consumer<Integer>`） |
+| 一次性回调 | `base::OnceCallback` | 无内置（需自定义或用 `Consumer`） |
+| 成员函数回调 | `base::Bind(&Class::Method, this)` | `this::method`（方法引用） |
+| Lambda 回调 | `[&var](int x) { ... }` | `x -> { ... }` |
+
+**C++ 回调示例：**
+
+```cpp
+// 绑定成员函数
+post_on_bt_thread(
+    base::BindOnce(&BtmSec::OnAuthenticationComplete,
+                   base::Unretained(this), bda, status));
+
+// Lambda 回调
+post_on_bt_thread(
+    base::BindOnce([](const RawAddress& bda, tBTM_STATUS status) {
+        LOG(INFO) << "Auth complete";
+    }, bd_addr, auth_status));
+```
+
+**Java 回调示例：**
+
+```java
+// 方法引用
+handler.post(() -> btmSec.onAuthenticationComplete(bda, status));
+
+// Lambda 回调
+handler.post(() -> Log.i("Auth complete for " + bdAddr));
+```
+
+> **关键区别**：C++ 的 `base::Bind`/`base::BindOnce` 可以绑定成员函数并延迟传参，Java 用方法引用和 Lambda 更简洁。Java 的回调天然是对象，由 GC 管理生命周期；C++ 需要手动管理回调对象的生命周期（如 `base::Unretained`）。
+
 ---
 
 ## 7. 泛型 Lambda (C++14)
@@ -731,6 +958,39 @@ std::string str = "hello";
 std::cout << get_size(vec);  // 3
 std::cout << get_size(str);  // 5
 ```
+
+### ☕ Java 类比
+
+C++ 的泛型 Lambda（`auto` 参数）与 Java 的泛型方法功能类似，但实现机制不同：
+
+| 对比项 | C++ 泛型 Lambda | Java 泛型方法 |
+|--------|----------------|-------------|
+| 语法 | `[](const auto& x) { ... }` | `<T> void process(T x) { ... }` |
+| 本质 | 模板化的 `operator()` | 类型擦除的泛型方法 |
+| 类型推导 | 编译期为每种类型生成特化 | 运行时类型擦除 |
+| 性能 | 零开销（编译期多态） | 可能有装箱开销（基本类型） |
+| 约束类型 | C++20 可用 `concept` 约束 | 可用 `<T extends ...>` 约束 |
+
+**C++ 泛型 Lambda 示例：**
+
+```cpp
+auto get_size = [](const auto& container) { return container.size(); };
+get_size(std::vector<int>{1, 2, 3});  // 3
+get_size(std::string("hello"));        // 5
+```
+
+**Java 泛型方法示例：**
+
+```java
+// Java Lambda 不支持泛型参数，需要用泛型方法包装
+<T> int getSize(Collection<T> collection) { return collection.size(); }
+getSize(List.of(1, 2, 3));  // 3
+
+// 或使用通配符函数式接口
+Function<Collection<?>, Integer> getSize = Collection::size;
+```
+
+> **关键区别**：C++ 泛型 Lambda 的 `auto` 参数让同一个 Lambda 对象可以接受不同类型，编译器为每种类型生成特化代码。Java Lambda 不支持泛型参数，需要用泛型方法或通配符类型间接实现。
 
 ---
 
@@ -818,6 +1078,50 @@ std::priority_queue<int, std::vector<int>, decltype(my_comp)> pq(my_comp);  // 2
 `priority_queue` 的比较器语义是：`comp(a, b)` 返回 `true` 表示 `a` 的优先级**低于** `b`，`a` 排在后面。所以：
 - `a.first > b.first` 返回 `true` → `a` 的时间更晚 → `a` 优先级更低 → `a` 排在后面
 - 结果：时间最早的任务优先级最高，最先出队 → 最小堆
+
+### ☕ Java 类比
+
+C++ 的 `std::priority_queue` + Lambda 比较器对应 Java 的 `PriorityQueue<T>` + `Comparator<T>`：
+
+| 对比项 | C++ `priority_queue` | Java `PriorityQueue` |
+|--------|---------------------|---------------------|
+| 默认行为 | 大顶堆（最大先出） | 小顶堆（最小先出） |
+| 自定义比较器 | Lambda + `decltype` | `Comparator<T>` Lambda |
+| 比较器传入方式 | 模板参数 + 构造参数 | 构造参数 |
+| 获取堆顶 | `pq.top()` | `pq.peek()` |
+| 出队 | `pq.pop()`（无返回值） | `pq.poll()`（返回堆顶元素） |
+| 入队 | `pq.push(x)` / `pq.emplace(...)` | `pq.offer(x)` / `pq.add(x)` |
+
+**C++ priority_queue + Lambda 示例：**
+
+```cpp
+auto compare_task_by_time = [](const DelayedTask& a, const DelayedTask& b) {
+    return a.first > b.first;  // 小顶堆
+};
+std::priority_queue<DelayedTask, std::vector<DelayedTask>,
+                    decltype(compare_task_by_time)> pq(compare_task_by_time);
+```
+
+**Java PriorityQueue + Comparator 示例：**
+
+```java
+// 方式 1：Lambda Comparator
+PriorityQueue<DelayedTask> pq = new PriorityQueue<>(
+    (a, b) -> a.getDeadline().compareTo(b.getDeadline())  // 小顶堆
+);
+
+// 方式 2：Comparator.comparing
+PriorityQueue<DelayedTask> pq = new PriorityQueue<>(
+    Comparator.comparing(DelayedTask::getDeadline)
+);
+
+// 使用
+pq.offer(new DelayedTask(deadline, task));
+DelayedTask top = pq.peek();  // 查看堆顶
+DelayedTask next = pq.poll(); // 取出并移除堆顶
+```
+
+> **关键区别**：C++ 的 `priority_queue` 需要将比较器类型作为模板参数（用 `decltype` 获取 Lambda 类型），并在构造时传入实例。Java 的 `PriorityQueue` 只需在构造时传入 `Comparator` 对象，更简洁。Java 默认是小顶堆，C++ 默认是大顶堆。
 
 ---
 
