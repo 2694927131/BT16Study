@@ -206,7 +206,7 @@ classDiagram
     ScanController --> ScannerMap
     ScanController --> ScanManager
     ScanManager --> ScanNativeInterface
-    ScanNativeInterface --> "com_android_bluetooth_scan.cpp"
+    ScanNativeInterface --> com_android_bluetooth_scan.cpp
 ```
 
 重点对象：
@@ -233,7 +233,7 @@ classDiagram
     GattService --> ContextMap
     GattService --> HandleMap
     GattService --> GattNativeInterface
-    GattNativeInterface --> "com_android_bluetooth_gatt.cpp"
+    GattNativeInterface --> com_android_bluetooth_gatt.cpp
 ```
 
 重点对象：
