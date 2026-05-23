@@ -125,10 +125,20 @@ docs(学习资料): 完成第 03 章 核心流程
 
 ## 5. 优先级（按此顺序推进）
 
+### 一阶（M1-M5，已全部交付 ✅）
 1. **P0**：00 总览、02 Framework API、03 核心流程、04 JNI 桥接。
 2. **P1**：06 A2DP/AVRCP、07 HFP、08 BLE/GATT、01 调试准备。
 3. **P2**：05 Native 栈基础（BTIF→BTA→Stack→GD 顺序）。
 4. **P3**：09 车机互联、10 C++ 附录、11 故障排查。
+
+### 二阶（M6-M7，v1.2 新增，待用户选定方案后启动）
+- **P0（必加）**：12 LE Audio 全景、16 音频路由 / Audio HAL 深入。
+- **P1（强推）**：13 安全与加密、14 OBEX（PBAP/MAP/SAP/OPP）、17 多设备共存与策略。
+- **P2（推荐）**：15 HID/PAN、18 BluetoothManagerService Kotlin 深度、19 性能 BQR。
+- **P3（可选）**：20 测试与 CTS、21 aconfig flag/版本演进、22 Socket 进阶、23 Vendor 扩展、24 测距与定位。
+- **附录（备查）**：A 完整参考表、B CDD / Qualification。
+
+方案选择见 `doc/差距分析与补全方案.md`：方案 A（P0+P1）/ 方案 B（A+P2）/ 方案 C（全量）。
 
 策略：**骨架先行，深度后补**。先把每章的"速通摘要 + 调用链 + Mermaid"建立起来，再回过头来逐节填充深度内容。
 

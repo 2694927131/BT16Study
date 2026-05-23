@@ -32,6 +32,30 @@
 
 ---
 
+## 二阶章节（规划中，待用户选定方案后生成）
+
+> 详细差距分析与方案选择见 [`差距分析与补全方案.md`](差距分析与补全方案.md)。
+
+| 编号 | 章节 | 优先级 |
+|------|------|--------|
+| 12 | LE Audio 全景（Unicast / Broadcast / Auracast / LC3 / CIS / BIS） | P0 |
+| 13 | 安全与加密专题（SSP / SMP / LE Privacy / Link Key） | P1 |
+| 14 | OBEX 系 Profile（PBAP / MAP / SAP / OPP） | P1 |
+| 15 | HID / PAN / 其他 Profile | P2 |
+| 16 | 音频路由与 Audio HAL 深入（Offload 路径 / 延迟 / STREAM 类型） | P0 |
+| 17 | 多设备共存与策略（ActiveDeviceManager / PhonePolicy） | P1 |
+| 18 | BluetoothManagerService 深度（Kotlin 实现 / AutoOn / 进程管理） | P2 |
+| 19 | 性能、功耗、Metrics、BQR | P2 |
+| 20 | 测试与 CTS（gtest / CTS Verifier / Bumble） | P3 |
+| 21 | Aconfig flag 与版本演进（Android 13→16 差异） | P3 |
+| 22 | BluetoothSocket / L2CAP CoC 进阶 | P3 |
+| 23 | Vendor 扩展 / 多 HCI | P3 |
+| 24 | 测距与定位（Channel Sounding / HADM） | P3 |
+| 附 A | 完整参考表（AT / HCI / UUID / 帧 / 工具） | 选 |
+| 附 B | CDD / Qualification | 选 |
+
+---
+
 ## 配套文档
 
 | 文档 | 用途 |
