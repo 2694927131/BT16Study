@@ -34,6 +34,11 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Windows 控制台默认 GBK，章节/物料包路径含中文会触发 UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 try:
     import yaml  # PyYAML
 except ImportError:
@@ -70,19 +75,24 @@ class Report:
         self.results.append(CheckResult(name, passed, severity, detail))
 
     def print_summary(self):
-        print(f"\n=== 自检报告: {self.file} ===")
+        print(f"\n=== Section Verify Report: {self.file} ===")
         for r in self.results:
-            mark = "✅" if r.passed else ("❌" if r.severity == "FAIL" else "⚠️")
-            print(f"  {mark} [{r.severity}] {r.name}")
+            if r.passed:
+                mark = "[OK]  "
+            elif r.severity == "FAIL":
+                mark = "[FAIL]"
+            else:
+                mark = "[WARN]"
+            print(f"  {mark} {r.name}")
             if not r.passed and r.detail:
                 for line in r.detail.splitlines():
                     print(f"        {line}")
         if self.has_fail:
-            print("\n结果: FAIL（阻断 commit）")
+            print("\nResult: FAIL (commit blocked)")
         elif self.has_warn:
-            print("\n结果: WARN-only（可入库，建议修复）")
+            print("\nResult: WARN-only (allowed to commit, fix recommended)")
         else:
-            print("\n结果: PASS ✅")
+            print("\nResult: PASS")
 
 
 # ---------------------------------------------------------------------------

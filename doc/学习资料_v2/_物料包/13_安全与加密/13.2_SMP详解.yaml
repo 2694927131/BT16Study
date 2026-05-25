@@ -1,0 +1,300 @@
+# ============================================================================
+# 13.2 SMP 详解 —— 物料包（v2 试点节）
+# ============================================================================
+# 制作者：Claude Opus 4.7
+# 制作日期：2026-05-25
+# 验证 AOSP 基线：android-16.0.0_r5
+# 适配模型档位：中（DeepSeek V4 / GLM 5.1 / Sonnet 4.6 / Gemini 2.5 Pro）
+# ============================================================================
+# 本文件即 doc/v2_物料包示例.md 中描述的完整物料包，可直接用于试点。
+# 所有 file:line 与函数名均经过 Grep 实际验证。
+# ============================================================================
+
+meta:
+  section_id: "13.2"
+  title: "SMP 详解：BLE 配对协议、密钥分发、关联模型"
+  priority: P1
+  audience:
+    - "车机蓝牙集成工程师"
+    - "BLE 钥匙 / Digital Key 安全相关工程师"
+  prerequisites:
+    - "03.3"
+    - "08.2"
+    - "13.1"
+  related_sections:
+    - "13.3"
+    - "13.4"
+    - "24.2"
+  last_verified: "2026-05-25"
+  verified_against_aosp: "android-16.0.0_r5"
+  estimated_reading_min: 45
+  estimated_practice_min: 120
+
+allowed_refs:
+  - path: "system/stack/smp/smp_api.cc"
+    lines: [49, 83, 116, 173]
+    purpose: "SMP_Init / SMP_Pair / SMP_PairCancel —— SMP 对外 API 入口"
+    verified_at: "2026-05-25"
+
+  - path: "system/stack/smp/smp_main.cc"
+    lines: [97, 914, 933, 1014]
+    purpose: "smp_set_state / smp_get_state / smp_get_state_name —— SMP 状态机核心"
+    verified_at: "2026-05-25"
+
+  - path: "system/stack/smp/smp_act.cc"
+    lines: [283, 538, 1399]
+    purpose: "smp_send_pair_req / smp_proc_pair_cmd / smp_decide_association_model"
+    verified_at: "2026-05-25"
+
+  - path: "system/stack/smp/smp_int.h"
+    lines: [379, 402, 412]
+    purpose: "关键函数声明（便于读者查 header）"
+    verified_at: "2026-05-25"
+
+  - path: "flags/pairing.aconfig"
+    lines: [65, 95, 115, 263]
+    purpose: "SMP 相关 aconfig flag"
+    verified_at: "2026-05-25"
+
+code_snippets:
+  - id: "snippet_smp_pair_entry"
+    source: "system/stack/smp/smp_api.cc:83-115"
+    language: "cpp"
+    code: |
+      // L83
+      tSMP_STATUS SMP_Pair(const RawAddress& bd_addr, tBLE_ADDR_TYPE addr_type) {
+        tSMP_CB* p_cb = &smp_cb;
+        log::verbose("addr_type:0x{:02x}, bd_addr:{}, state:{}",
+                     addr_type, bd_addr, p_cb->state);
+
+        if (p_cb->state != SMP_STATE_IDLE ||
+            p_cb->smp_over_br ||
+            p_cb->flags & SMP_PAIR_FLAGS_WE_STARTED_DD) {
+          return SMP_BUSY;
+        }
+        p_cb->role = HCI_ROLE_CENTRAL;
+        p_cb->flags = SMP_PAIR_FLAGS_WE_STARTED_DD;
+        p_cb->pairing_bda = bd_addr;
+        smp_sm_event(p_cb, SMP_PAIR_REQ_EVT, NULL);
+        return SMP_STARTED;
+      }
+    annotation: |
+      这是 SMP 配对的主入口：上层（GATT/BTA/BTIF）调用 SMP_Pair 后，
+      SMP 模块构建控制块（tSMP_CB），将状态机推到 SMP_PAIR_REQ_EVT。
+      Java 端的 device.createBond() 经过 BTIF → BTA → BTM 后最终落在这里。
+
+  - id: "snippet_smp_state_machine"
+    source: "system/stack/smp/smp_main.cc:914-935"
+    language: "cpp"
+    code: |
+      // L914
+      void smp_set_state(tSMP_STATE state) {
+        if (state < SMP_STATE_MAX) {
+          log::debug("State change: {}({}) ==> {}({})",
+                     smp_get_state_name(smp_cb.state), smp_cb.state,
+                     smp_get_state_name(state), state);
+          smp_cb.state = state;
+        } else {
+          log::error("invalid state={}", state);
+        }
+      }
+
+      // L933
+      tSMP_STATE smp_get_state(void) { return smp_cb.state; }
+    annotation: |
+      SMP 状态机用单一全局 smp_cb（控制块）维护，状态变迁全部通过 smp_set_state。
+      调试时打开 bt_gd_smp:V 即可看到完整的 "State change: A ==> B" 日志。
+
+flags:
+  - name: "smp_connection_status_handling_when_no_acl"
+    file: "flags/pairing.aconfig:65"
+    default: true
+    impact: "ACL 未建立时 SMP 连接状态的处理策略"
+
+  - name: "unrelated_device_smp_cancellation"
+    file: "flags/pairing.aconfig:95"
+    default: true
+    impact: "无关设备触发的 SMP 取消请求是否生效"
+
+  - name: "ignore_le_smp_conn_when_sm_over_br_progress"
+    file: "flags/pairing.aconfig:115"
+    default: true
+    impact: "BR 配对进行中时是否忽略 LE SMP 连接（避免双轨冲突）"
+
+  - name: "conclude_le_pairing_immediately"
+    file: "flags/pairing.aconfig:263"
+    default: false
+    impact: "LE 配对完成后是否立即结束（影响 CTKD 行为）"
+
+terms:
+  - canonical: "Central / Peripheral"
+    forbidden: ["主设备", "从设备", "主机/外设", "Master/Slave"]
+    ref: "doc/术语表.md#C.1"
+
+  - canonical: "Just Works"
+    forbidden: ["直接配对", "无密码配对", "免密配对"]
+    ref: "doc/术语表.md#F.3"
+
+  - canonical: "Numeric Comparison"
+    forbidden: ["数字比对", "数字确认", "数字校验"]
+    ref: "doc/术语表.md#F.4"
+
+  - canonical: "Passkey Entry"
+    forbidden: ["密码输入", "密钥输入", "PIN 输入"]
+    ref: "doc/术语表.md#F.5"
+
+  - canonical: "Out Of Band"
+    forbidden: ["带外", "外部通道"]
+    ref: "doc/术语表.md#F.6"
+
+  - canonical: "LTK / IRK / CSRK"
+    forbidden: ["长期密钥", "身份解析密钥", "签名密钥"]
+    ref: "doc/术语表.md#F.7"
+
+  - canonical: "CTKD"
+    forbidden: ["跨传输密钥派生", "跨传输密钥推导"]
+    ref: "doc/术语表.md#F.9"
+
+mermaid_templates:
+  - id: "T-SEQ-5"
+    use_for: "BLE 配对完整时序图（App → BluetoothGatt → BTIF → BTA → SMP → 对端）"
+
+  - id: "T-STATE-2"
+    use_for: "SMP 状态机：IDLE → WAIT_APP_RSP → PAIR_REQ_SENT → PAIR_RSP_RCVD → ..."
+
+  - id: "T-FLOW-DECISION"
+    use_for: "Association Model 决策树：IO Caps + OOB + MITM → JW / NC / PE / OOB"
+
+section_outline:
+  s02_objectives:
+    min_words: 100
+    must_contain:
+      - "SMP 状态机"
+      - "Association Model"
+      - "LTK / IRK"
+    template: |
+      读完本节，你能：
+      - 画出 SMP 完整状态机
+      - 解释 4 种 Association Model 的选择条件
+      - 区分 LTK / IRK / CSRK 的作用与持久化路径
+      - 用 btsnoop 抓取并解读完整 SMP 流程
+
+  s03_prereq:
+    min_words: 80
+    must_link: ["03.3", "08.2", "13.1"]
+
+  s04_scene:
+    min_words: 250
+    must_mention:
+      - "BLE 钥匙"
+      - "数字车钥匙"
+      - "首次配对"
+    template_hint: |
+      建议故事：用户首次拿到带 BLE 钥匙的车，下车走 5 米后车自动落锁；
+      展开讲：① 钥匙与车机如何完成配对；② 后续重连时用哪个密钥；
+      ③ 如果钥匙被克隆会发生什么（引出 MITM 防护）
+
+  s05_protocol:
+    min_words: 800
+    must_contain:
+      - "Pairing Request"
+      - "Pairing Response"
+      - "Phase 1"
+      - "Phase 2"
+      - "Phase 3"
+      - "Key Distribution"
+      - "Bluetooth Core Spec Vol 3 Part H"
+    must_have_hexdump: true
+
+  s06_call_chain:
+    min_layers: 5
+    format: |
+      App: device.createBond()
+      Framework: BluetoothDevice.java
+      Service: AdapterService.kt
+      JNI: com_android_bluetooth_btservice_AdapterService.cpp
+      BTIF: system/btif/src/btif_dm.cc
+      BTA: system/bta/dm/bta_dm_act.cc
+      Stack/SMP: system/stack/smp/smp_api.cc:83
+
+  s07_source_guide:
+    min_refs: 8
+    all_from_allowed_refs: true
+    suggested_order:
+      - "smp_api.cc:49（初始化入口）"
+      - "smp_api.cc:83（配对入口）"
+      - "smp_act.cc:283（构造 Pairing Request）"
+      - "smp_act.cc:538（解析对端 Pairing Cmd）"
+      - "smp_act.cc:1399（决定 Association Model）"
+      - "smp_main.cc:914（状态机变迁）"
+      - "smp_main.cc:1014（状态名调试）"
+      - "smp_int.h:379-412（公共声明速查）"
+
+  s08_simplified_code:
+    min_snippets: 2
+    required_snippets:
+      - "snippet_smp_pair_entry"
+      - "snippet_smp_state_machine"
+
+  s09_mermaid:
+    min_diagrams: 2
+    required_templates:
+      - "T-SEQ-5"
+      - "T-STATE-2"
+
+  s10_measured:
+    required_fields:
+      - "时延（首次配对 Phase 1-3 总耗时，典型/p95）"
+      - "成功率（车机 vs 不同手机品牌兼容性）"
+      - "重试次数（弱信号下的统计）"
+    data_source_hint: "可从 dumpsys bluetooth_manager metrics 或 BQR 上报获取"
+
+  s11_debug:
+    must_include_commands:
+      - "adb logcat -s bt_gd_smp:V bt_gd_security:V"
+      - "adb shell dumpsys bluetooth_manager | grep -A 30 SMP"
+      - "btsnoop + Wireshark filter: btsmp"
+      - "adb shell device_config get bluetooth conclude_le_pairing_immediately"
+    car_integration_points:
+      - "OEM 通常定制 IO Capability（车机多为 DisplayYesNo）"
+      - "BLE 钥匙厂商常通过 CTKD 同时建立 BR/EDR 加密"
+      - "首次配对后 LTK 持久化路径：/data/misc/bluedroid/bt_config.conf"
+
+  s12_faq_homework:
+    min_faqs: 4
+    min_quizzes: 3
+    min_homeworks: 2
+    suggested_faqs:
+      - "为什么我的 BLE 钥匙重连不需要再配对？（LTK 持久化）"
+      - "Just Works 是否真的不安全？（短距离威胁模型 + CCC 要求 NC）"
+      - "iOS / Android 的 IO Capability 差异导致的兼容问题"
+      - "LE Secure Connections vs Legacy Pairing 如何区分"
+    suggested_homeworks:
+      - "用 btsnoop 抓一次完整的 BLE 配对，在 Wireshark 标出 Phase 1/2/3"
+      - "改 conclude_le_pairing_immediately flag 观察行为变化"
+
+known_pitfalls:
+  - description: "不要把 SSP 和 SMP 混为一谈"
+    detail: "SSP 是 Classic（BR/EDR）配对，SMP 是 LE 配对，协议完全不同"
+
+  - description: "不要写 'Master/Slave'"
+    detail: "BLE 5.3+ 强制使用 Central/Peripheral"
+
+  - description: "smp_cb 是全局单例"
+    detail: "AOSP 当前实现 SMP 一次只能跑一对配对，并发请求会返回 SMP_BUSY"
+
+  - description: "LTK 和 Link Key 不是同一个东西"
+    detail: "LTK = LE Long Term Key；Link Key = Classic 链路密钥；CTKD 才是把两者派生关联起来"
+
+cross_links:
+  - target: "../03_核心流程/03.3_配对.md"
+    anchor_text: "Classic 配对流程对比见 03.3"
+
+  - target: "../13_安全与加密/13.3_LE_Privacy.md"
+    anchor_text: "RPA/IRK 详见 13.3"
+
+  - target: "../13_安全与加密/13.4_LinkKey类型.md"
+    anchor_text: "CTKD 与跨传输密钥派生详见 13.4"
+
+  - target: "../24_测距与定位/24.2_Channel_Sounding_HADM.md"
+    anchor_text: "CS Security Level 3 依赖 SMP 派生密钥，详见 24.2"
