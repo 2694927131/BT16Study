@@ -1,0 +1,372 @@
+# ============================================================================
+# 12.4 CSIP / VCP / MCP / TBS 四件套 —— 物料包（v2 ch12 P0）
+# ============================================================================
+# 制作者：Claude Sonnet 4.6
+# 制作日期：2026-05-26
+# 验证 AOSP 基线：android-16.0.0_r5
+# 适配模型档位：中（DeepSeek V4 / GLM 5.1 / Sonnet 4.6 / Gemini 2.5 Pro）
+# ============================================================================
+# 本节覆盖 LE Audio 体系中的四个伴随 Profile：
+#   CSIP — 协调集（双耳同步）
+#   VCP  — 音量控制
+#   MCP  — 媒体控制（播放/暂停/上下曲）
+#   TBS  — 电话承载服务（来电/接听/挂断）
+# 这四个 Profile 不传输音频数据，但控制"谁在播、音量多大、播什么、接不接电话"。
+# ============================================================================
+
+meta:
+  section_id: "12.4"
+  title: "CSIP / VCP / MCP / TBS：LE Audio 伴随 Profile 四件套"
+  priority: P0
+  audience:
+    - "车机蓝牙集成工程师"
+    - "应用/Framework 工程师"
+    - "Profile 维护工程师"
+  prerequisites:
+    - "12.1"
+    - "12.3"
+    - "08.2"
+  related_sections:
+    - "12.5"
+    - "12.6"
+    - "17.1"
+  last_verified: "2026-05-26"
+  verified_against_aosp: "android-16.0.0_r5"
+  estimated_reading_min: 30
+  estimated_practice_min: 60
+
+allowed_refs:
+  - path: "android/app/src/com/android/bluetooth/csip/CsipSetCoordinatorService.java"
+    lines: [72, 182, 224, 506]
+    purpose: "CsipSetCoordinatorService：connect/disconnect/getGroupId(SIRK 组 ID)"
+    verified_at: "2026-05-26"
+
+  - path: "android/app/src/com/android/bluetooth/vc/VolumeControlService.java"
+    lines: [79, 553, 583]
+    purpose: "VolumeControlService：setVolumeOffset（VOCS 相对音量）/ setDeviceVolume（VCS 绝对音量）"
+    verified_at: "2026-05-26"
+
+  - path: "android/app/src/com/android/bluetooth/mcp/McpService.java"
+    lines: [40]
+    purpose: "McpService：媒体控制 Profile 服务入口"
+    verified_at: "2026-05-26"
+
+  - path: "android/app/src/com/android/bluetooth/mcp/MediaControlProfile.java"
+    lines: [65, 399]
+    purpose: "MediaControlProfile：实现 MediaControlServiceCallbacks，onMediaControlRequest 处理播放/暂停/换曲"
+    verified_at: "2026-05-26"
+
+  - path: "android/app/src/com/android/bluetooth/tbs/TbsService.java"
+    lines: [40, 118, 215]
+    purpose: "TbsService：setDeviceAuthorized（授权设备）/ callAdded（来电通知）"
+    verified_at: "2026-05-26"
+
+  - path: "framework/java/android/bluetooth/BluetoothCsipSetCoordinator.java"
+    lines: [64, 285, 320]
+    purpose: "Framework API：BluetoothCsipSetCoordinator.lockGroup() / unlockGroup()，用于协调集操作（如同时更新双耳音量）"
+    verified_at: "2026-05-26"
+
+  - path: "framework/java/android/bluetooth/BluetoothVolumeControl.java"
+    lines: [68, 704]
+    purpose: "Framework API：BluetoothVolumeControl.setDeviceVolume(device, volume, isGroupOperation)"
+    verified_at: "2026-05-26"
+
+  - path: "system/bta/le_audio/device_groups.h"
+    lines: [50]
+    purpose: "LeAudioDeviceGroup：CSIP 协调集在 BTA 层的数据结构，管理多设备同步"
+    verified_at: "2026-05-26"
+
+code_snippets:
+  - id: "snippet_csip_lock_group"
+    source: "framework/java/android/bluetooth/BluetoothCsipSetCoordinator.java:285-320"
+    language: "java"
+    code: |
+      // L285
+      public @Nullable UUID lockGroup(
+              int groupId,
+              @NonNull @CallbackExecutor Executor executor,
+              @NonNull ClientLockCallback callback) {
+          // ...
+          final IBluetoothCsipSetCoordinator service = getService();
+          if (service == null) {
+              Log.w(TAG, "Proxy not attached to service");
+              return null;
+          }
+          // 向服务端申请对 groupId 的独占锁
+          final ParcelUuid ret = service.lockGroup(groupId, delegate, mAttributionSource);
+          return ret != null ? ret.getUuid() : null;
+      }
+
+      // L320
+      public boolean unlockGroup(@NonNull UUID lockUuid) {
+          // 释放之前申请的锁，传入 lockGroup 返回的 lockUuid
+          final IBluetoothCsipSetCoordinator service = getService();
+          if (service == null) {
+              return false;
+          }
+          service.unlockGroup(new ParcelUuid(lockUuid), mAttributionSource);
+          return true;
+      }
+    annotation: |
+      lockGroup / unlockGroup 是 CSIP 的"原子操作"机制：
+      在给双耳同时设置音量或换曲时，先 lockGroup 确保两台设备不会被其他操作打断，
+      然后批量操作，最后 unlockGroup。
+      这等价于 Java 的 synchronized 块——锁住一个 groupId 代表的协调集，
+      期间其他客户端的操作会被排队。锁由 UUID 标识，不是 int，避免跨进程锁 ID 冲突。
+      未能获取锁时（另一个客户端持有锁）返回 null。
+
+  - id: "snippet_vcp_set_device_volume"
+    source: "android/app/src/com/android/bluetooth/vc/VolumeControlService.java:583-595"
+    language: "java"
+    code: |
+      // L583
+      synchronized void setDeviceVolume(BluetoothDevice device, int volume, boolean isGroupOp) {
+          Log.d(TAG,
+                  "setDeviceVolume: " + device
+                  + ", volume: " + volume
+                  + ", isGroupOp: " + isGroupOp);
+          if (isGroupOp) {
+              // 找到设备所在的协调集 groupId，对整组下发音量
+              int groupId = mCsipSetCoordinatorService.getGroupId(
+                      device, BluetoothUuid.CAP);
+              if (groupId != BluetoothCsipSetCoordinator.GROUP_ID_INVALID) {
+                  mNativeInterface.setGroupVolume(groupId, volume);
+                  return;
+              }
+          }
+          // 单设备音量设置（非组操作）
+          mNativeInterface.setVolume(device, volume);
+      }
+    annotation: |
+      VCP 的音量控制分两路：
+      - isGroupOp=true：通过 CSIP 找到协调集 groupId，调用 Native setGroupVolume，
+        一次命令同步双耳音量（如左右耳机）；
+      - isGroupOp=false：只对单个设备设置音量。
+      车机场景通常用 isGroupOp=true，确保双耳一致。
+      VOCS（Volume Offset Control Service）通过 setVolumeOffset 实现
+      左右声道独立偏移（如左耳 -3dB），与 VCS 绝对音量是叠加关系。
+
+flags:
+  - name: "leaudio_multiple_vocs_instances_api"
+    file: "flags/leaudio.aconfig:28"
+    default: true
+    impact: "支持多 VOCS 实例（多输出音量偏移，如左右声道独立控制）"
+
+terms:
+  - canonical: "CSIP（Coordinated Set Identification Profile）"
+    forbidden: ["协调集识别 Profile", "协调设备集"]
+    ref: "doc/术语表.md#P.1"
+
+  - canonical: "VCP（Volume Control Profile）"
+    forbidden: ["音量控制 Profile", "VCP 音量"]
+    ref: "doc/术语表.md#P.2"
+
+  - canonical: "MCP（Media Control Profile）"
+    forbidden: ["媒体控制 Profile", "MCP 媒体"]
+    ref: "doc/术语表.md#P.3"
+
+  - canonical: "TBS（Telephone Bearer Service）"
+    forbidden: ["电话承载服务", "TBS 电话"]
+    ref: "doc/术语表.md#P.4"
+
+  - canonical: "VOCS（Volume Offset Control Service）"
+    forbidden: ["音量偏移控制服务", "VOCS 偏移"]
+    ref: "doc/术语表.md#P.5"
+
+  - canonical: "lockGroup / unlockGroup"
+    forbidden: ["锁组 / 解锁组", "lock group"]
+    ref: "doc/术语表.md#P.6"
+
+  - canonical: "LeAudioDeviceGroup"
+    forbidden: ["LE Audio 设备组", "LE Audio group"]
+    ref: "doc/术语表.md#P.7"
+
+  - canonical: "SIRK（Set Identity Resolving Key）"
+    forbidden: ["集合身份解析密钥", "SIRK 密钥"]
+    ref: "doc/术语表.md#P.8"
+
+mermaid_templates:
+  - id: "T-ARCH-MODULE"
+    use_for: "LE Audio Profile 矩阵：BAP(音频传输) + CSIP(协调集) + VCP(音量) + MCP(媒体控制) + TBS(电话) 各自的服务层次"
+
+  - id: "T-SEQ-5"
+    use_for: "setDeviceVolume 调用链时序：App → BluetoothVolumeControl.setDeviceVolume → VolumeControlService → CsipSetCoordinatorService.getGroupId → NativeInterface.setGroupVolume → Controller"
+
+  - id: "T-FLOW-DECISION"
+    use_for: "isGroupOp 决策树：单设备音量 vs 协调集音量，CSIP lockGroup 使用时机"
+
+section_outline:
+  s02_objectives:
+    min_words: 100
+    must_contain:
+      - "CSIP"
+      - "VCP"
+      - "MCP"
+      - "TBS"
+      - "lockGroup"
+      - "setDeviceVolume"
+    template: |
+      读完本节，你能：
+      - 用一句话说清 CSIP / VCP / MCP / TBS 各自负责什么，以及与 BAP 的关系
+      - 画出从 App 调用 setDeviceVolume 到 VCP Native 命令下发的完整调用链（5 层）
+      - 理解 CSIP lockGroup / unlockGroup 的用途与使用时机
+      - 区分 VCS（绝对音量）与 VOCS（偏移音量）的应用场景
+      - 找到 MCP 和 TBS 的 Java Service 入口，理解媒体控制与电话控制如何通过 GATT 下发命令
+
+  s03_prereq:
+    min_words: 80
+    must_link: ["12.1", "12.3", "08.2"]
+
+  s04_scene:
+    min_words: 200
+    must_mention:
+      - "双耳"
+      - "音量"
+      - "来电"
+    template_hint: |
+      建议场景：张先生正用 LE Audio 双耳机（左右耳各一台，CSIP 协调集）
+      在车里听音乐（MCP），突然来了一个电话（TBS）：
+      ① TBS 触发来电通知 → 车机响铃；
+      ② 用户接听 → MCP 暂停音乐；
+      ③ 通话结束 → MCP 恢复播放；
+      ④ 用户觉得音量太大 → App 调 setDeviceVolume(isGroupOp=true) →
+         VCP + CSIP 协调，同时更新左右耳音量。
+
+  s05_protocol:
+    min_words: 700
+    must_contain:
+      - "CSIP"
+      - "VCP"
+      - "MCP"
+      - "TBS"
+      - "VOCS"
+      - "SIRK"
+      - "lockGroup"
+      - "setDeviceVolume"
+      - "isGroupOp"
+      - "LeAudioDeviceGroup"
+      - "MediaControlProfile"
+    must_have_hexdump: false
+    note: |
+      四个 Profile 各用一段讲清：
+      CSIP - SIRK + lockGroup 的核心机制；
+      VCP - VCS 绝对音量 vs VOCS 偏移，isGroupOp 与 CSIP 的协作；
+      MCP - GMCS（Generic MCS）与设备注册，onMediaControlRequest 事件流；
+      TBS - GTBS（Generic TBS）与 setDeviceAuthorized 授权，callAdded 通知流。
+
+  s06_call_chain:
+    min_layers: 5
+    format: |
+      VCP setDeviceVolume（Group 模式）调用链：
+        App: mBluetoothVolumeControl.setDeviceVolume(device, volume, isGroupOperation=true)
+        Framework: BluetoothVolumeControl.java:704 → IBluetoothVolumeControl.setDeviceVolume()
+        Service: VolumeControlService.java:583 → CsipSetCoordinatorService.getGroupId()
+        Service: mNativeInterface.setGroupVolume(groupId, volume)
+        JNI → Native: VolumeControlNativeInterface → BTA VolumeControl → HCI GATT Write
+
+      CSIP lockGroup 调用链：
+        App: mBluetoothCsip.lockGroup(groupId, executor, callback)
+        Framework: BluetoothCsipSetCoordinator.java:285
+        Service: CsipSetCoordinatorService → mNativeInterface.groupLockSet()
+        JNI → Native: BTA CSIP → GATT Write（CSIS Lock Characteristic）
+
+  s07_source_guide:
+    min_refs: 8
+    all_from_allowed_refs: true
+    suggested_order:
+      - "device_groups.h:50（LeAudioDeviceGroup：CSIP 在 BTA 层的数据结构）"
+      - "CsipSetCoordinatorService.java:72（Service 类声明）"
+      - "CsipSetCoordinatorService.java:182/506（connect / getGroupId）"
+      - "BluetoothCsipSetCoordinator.java:64（Framework API 类）"
+      - "BluetoothCsipSetCoordinator.java:285/320（lockGroup / unlockGroup）"
+      - "VolumeControlService.java:79（VCP Service 类声明）"
+      - "VolumeControlService.java:583/553（setDeviceVolume / setVolumeOffset）"
+      - "BluetoothVolumeControl.java:68/704（Framework API：setDeviceVolume）"
+      - "McpService.java:40（MCP Service 入口）"
+      - "MediaControlProfile.java:65/399（MediaControlProfile + onMediaControlRequest）"
+      - "TbsService.java:40（TBS Service 入口）"
+      - "TbsService.java:118/215（setDeviceAuthorized / callAdded）"
+
+  s08_simplified_code:
+    min_snippets: 2
+    required_snippets:
+      - "snippet_csip_lock_group"
+      - "snippet_vcp_set_device_volume"
+
+  s09_mermaid:
+    min_diagrams: 2
+    required_templates:
+      - "T-ARCH-MODULE"
+      - "T-SEQ-5"
+
+  s10_measured:
+    required_fields:
+      - "VCP 音量指令到达耳机生效时延（从 setDeviceVolume 到耳机实际改变音量）"
+      - "CSIP lockGroup 到 unlockGroup 典型时长（批量操作窗口）"
+      - "TBS 来电通知时延（从手机来电到 callAdded 触发耳机响铃）"
+    data_source_hint: |
+      - btsnoop + Wireshark 过滤 GATT Write 到对应 Characteristic UUID
+      - adb logcat -s VolumeControlService:V CsipSetCoordinatorService:V TbsService:V
+
+  s11_debug:
+    must_include_commands:
+      - "adb logcat -s VolumeControlService:V CsipSetCoordinatorService:V McpService:V TbsService:V"
+      - "adb shell dumpsys bluetooth_manager | grep -A 20 'VolumeControl\\|CSIP'"
+      - "btsnoop + Wireshark filter: btatt && (btatt.opcode == 0x12 || btatt.opcode == 0x52)"
+      - "adb shell device_config list bluetooth | grep leaudio_multiple_vocs"
+    car_integration_points:
+      - "车机通常作为 MCP Client（控制手机媒体）而非 MCP Server；如果车机有本地媒体播放器也可以实现 GMCS Server，让耳机控制车机媒体"
+      - "TBS 授权（setDeviceAuthorized）默认只授权已配对设备——如果新耳机连上来但 TBS 未授权，来电铃声不会路由到耳机，需排查授权逻辑"
+      - "VOCS（多音量偏移实例）由 `leaudio_multiple_vocs_instances_api` flag 控制；车机多扬声器区域场景可用 VOCS 独立控制每个扬声器的音量偏移"
+      - "CSIP 的 SIRK 是设备出厂时烧录的固定密钥，用于识别同一协调集的设备；如果双耳耳机的 SIRK 不一致（固件 bug），CSIP getGroupId 会返回不同 groupId，导致 isGroupOp 失效"
+
+  s12_faq_homework:
+    min_faqs: 4
+    min_quizzes: 3
+    min_homeworks: 2
+    suggested_faqs:
+      - "CSIP 和 GATT 的 CCC（Client Characteristic Configuration）有什么关系？协调集是怎么识别的？"
+      - "为什么 setDeviceVolume 需要先调用 CSIP getGroupId？直接用 GATT Write 调音量不行吗？"
+      - "MCP 和 AVRCP 的媒体控制有什么区别？车机什么时候用 MCP、什么时候用 AVRCP？"
+      - "TBS 和经典蓝牙 HFP 的来电流程有什么不同？能并存吗？"
+    suggested_homeworks:
+      - "用 btsnoop 抓一次双耳 LE Audio 设备的音量调节，在 Wireshark 中找到 VCP GATT Write 命令，确认是发给 group 还是单设备（对比 setGroupVolume vs setVolume 的 handle）"
+      - "用 adb logcat -s CsipSetCoordinatorService:V 抓一次 CSIP 设备发现过程，找到 SIRK 的 log 输出，确认两台耳机的 groupId 是否一致"
+
+known_pitfalls:
+  - description: "不要把 VCP 的 VCS 和 AVRCP 的绝对音量混淆"
+    detail: |
+      AVRCP Absolute Volume（A2DP 场景用）与 VCP VCS（LE Audio 场景用）是两套独立的音量协议。
+      如果设备同时连着 A2DP 和 LE Audio，需要分别处理。
+      车机切换到 LE Audio 后应停止用 AVRCP 音量控制，改用 VCP，否则两套控制会互相干扰。
+
+  - description: "CSIP lockGroup 不是分布式锁，只针对同一 Android 进程内的竞争"
+    detail: |
+      lockGroup 防止的是同一 Bluetooth App 进程内多个客户端同时操作同一协调集，
+      不能防止跨 App 的并发（如车机 App + 三方音乐 App 同时调音量）。
+      实际生产中 OEM 通常通过 AudioPolicyManager 的音量路由确保只有一个路径在控制音量。
+
+  - description: "TBS 的 callAdded 只通知耳机，来电铃声路由还需 AudioPolicyManager 配合"
+    detail: |
+      callAdded 只是把来电信息通知给 TBS Client（耳机），
+      真正让铃声从耳机扬声器出来，还需要 AudioPolicyManager 把 STREAM_RING
+      路由到当前活跃的 LE Audio 输出设备。两个步骤都要就绪铃声才能响。
+
+  - description: "MCP 控制的是 GATT 层的媒体状态，不直接控制 Android MediaPlayer"
+    detail: |
+      McpService 通过 MediaControlProfile 连接到 Android MediaSession，
+      耳机发来的 MCP 媒体控制命令（play/pause）经由 MediaSession API 传到 App。
+      如果 App 没有注册 MediaSession（如某些直播 App），MCP 控制命令会被静默忽略。
+
+cross_links:
+  - target: "../12_LE_Audio/12.1_LE_Audio_全景.md"
+    anchor_text: "CSIP/VCP/MCP/TBS 在 LE Audio 全景中的定位详见 12.1"
+
+  - target: "../12_LE_Audio/12.3_CIS_BIS_ISO.md"
+    anchor_text: "LeAudioDeviceGroup 与 CIG 协调集的 CIS 建立详见 12.3"
+
+  - target: "../12_LE_Audio/12.5_ASHA助听器.md"
+    anchor_text: "助听器使用 CSIP/VCP 的特殊要求详见 12.5"
+
+  - target: "../17_多设备共存与策略/17.1_ActiveDeviceManager深度.md"
+    anchor_text: "多设备场景下 CSIP 协调集的 Active Device 策略详见 17.1"

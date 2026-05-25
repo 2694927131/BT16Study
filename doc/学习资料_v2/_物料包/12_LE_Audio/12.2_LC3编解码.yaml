@@ -1,0 +1,394 @@
+# ============================================================================
+# 12.2 LC3 编解码 —— 物料包（v2 ch12 P0）
+# ============================================================================
+# 制作者：Claude Sonnet 4.6
+# 制作日期：2026-05-26
+# 验证 AOSP 基线：android-16.0.0_r5
+# 适配模型档位：中（DeepSeek V4 / GLM 5.1 / Sonnet 4.6 / Gemini 2.5 Pro）
+# ============================================================================
+# 本节覆盖 LE Audio 的音频编解码核心：LC3 格式参数、AOSP 中 Software 编解码路径
+# （CodecInterface）与 Offload 路径（CodecManager），以及 JSON 配置文件的加载机制。
+# 12.1 介绍了 LE Audio 全景，本节深入"音频数据是如何被 LC3 编解码的"。
+# ============================================================================
+
+meta:
+  section_id: "12.2"
+  title: "LC3 编解码：帧结构、AOSP 实现路径与 Offload/Software 切换"
+  priority: P0
+  audience:
+    - "音频/HAL 工程师"
+    - "车机蓝牙集成工程师"
+    - "性能调优工程师"
+  prerequisites:
+    - "12.1"
+    - "16.1"
+  related_sections:
+    - "12.3"
+    - "12.4"
+    - "16.2"
+  last_verified: "2026-05-26"
+  verified_against_aosp: "android-16.0.0_r5"
+  estimated_reading_min: 30
+  estimated_practice_min: 60
+
+allowed_refs:
+  - path: "system/bta/le_audio/codec_interface.h"
+    lines: [41, 50, 55, 57, 59, 62]
+    purpose: "CodecInterface 类：LC3 软件编解码 API（InitEncoder / InitDecoder / Encode / Decode）"
+    verified_at: "2026-05-26"
+
+  - path: "system/bta/le_audio/codec_manager.h"
+    lines: [59, 68, 96, 103, 110, 117, 128]
+    purpose: "CodecManager 类：Offload/Software 路径选择、Unicast/Broadcast 配置需求结构体"
+    verified_at: "2026-05-26"
+
+  - path: "system/bta/le_audio/codec_manager.cc"
+    lines: [112, 1455, 1457, 1463, 1469]
+    purpose: "CodecManager 实现：codec_manager_impl 内部类、Start/Stop/GetCodecLocation 公开方法"
+    verified_at: "2026-05-26"
+
+  - path: "system/bta/le_audio/le_audio_types.h"
+    lines: [505, 1018, 1139, 1292, 1355, 1360]
+    purpose: "LE Audio 核心类型：BidirectionalPair / LeAudioCodecId / CodecConfigSetting / AudioSetConfiguration / LeAudioCodecIdLc3 / LeAudioCodecIdOpus"
+    verified_at: "2026-05-26"
+
+  - path: "system/bta/le_audio/le_audio_set_configuration_provider_json.cc"
+    lines: [54, 56, 387]
+    purpose: "JSON 配置加载：kLeAudioSetConfigs 路径定义 + LoadConfigurationsFromFiles 入口"
+    verified_at: "2026-05-26"
+
+  - path: "framework/java/android/bluetooth/BluetoothLeAudio.java"
+    lines: [1342]
+    purpose: "Framework API：getCodecStatus(int groupId) 获取当前 codec 配置状态"
+    verified_at: "2026-05-26"
+
+  - path: "flags/leaudio.aconfig"
+    lines: [141, 152, 182, 200]
+    purpose: "LC3/Codec 相关 aconfig flag：context_type_manager / codec_extensibility / opus_hi_res / dynamic_data_path"
+    verified_at: "2026-05-26"
+
+code_snippets:
+  - id: "snippet_codec_interface_encode"
+    source: "system/bta/le_audio/codec_interface.h:41-72"
+    language: "cpp"
+    code: |
+      // L41
+      class CodecInterface {
+      public:
+        enum class Status {
+          STATUS_ERR_CODEC_NOT_READY = -128,
+          STATUS_ERR_INVALID_CODEC_ID = -127,
+          STATUS_ERR_CODING_ERROR = -1,
+          STATUS_OK = 0,
+        };
+
+        CodecInterface(const types::LeAudioCodecId& codec_id);
+        virtual ~CodecInterface();
+        static std::unique_ptr<CodecInterface> CreateInstance(
+                const types::LeAudioCodecId& codec_id) {
+          return std::make_unique<CodecInterface>(codec_id);
+        }
+        // L55
+        virtual CodecInterface::Status InitEncoder(
+                const LeAudioCodecConfiguration& pcm_config,
+                const LeAudioCodecConfiguration& codec_config);
+        virtual CodecInterface::Status InitDecoder(
+                const LeAudioCodecConfiguration& codec_config,
+                const LeAudioCodecConfiguration& pcm_config);
+        // L59
+        virtual CodecInterface::Status Encode(
+                const uint8_t* data, int stride, uint16_t out_size,
+                std::vector<int16_t>* out_buffer = nullptr, uint16_t out_offset = 0);
+        virtual CodecInterface::Status Decode(uint8_t* data, uint16_t size);
+        // ...
+      };
+    annotation: |
+      CodecInterface 是 AOSP LE Audio Software（CPU）编解码路径的核心：
+      - 用 `CreateInstance(LeAudioCodecIdLc3)` 创建 LC3 编解码器实例（工厂方法，返回 unique_ptr）；
+      - InitEncoder / InitDecoder 传入 PCM 参数（采样率、比特宽度、帧间隔）与 codec 参数；
+      - Encode 把 PCM 字节流编成 LC3 帧，Decode 反向；
+      - Status 枚举是 C++ 的错误码机制，等价于 Java 的枚举返回值或 exception。
+      Offload 模式（Controller 自行编解码）不走此路径，但 Software 回退时必经此处。
+
+  - id: "snippet_codec_manager_start"
+    source: "system/bta/le_audio/codec_manager.cc:1455-1475"
+    language: "cpp"
+    code: |
+      // L1455
+      CodecManager::CodecManager() : pimpl_(std::make_unique<impl>(*this)) {}
+
+      // L1457
+      void CodecManager::Start(
+              const std::vector<btle_audio_codec_config_t>& offloading_preference) {
+        if (!pimpl_->IsRunning()) {
+          pimpl_->Start(offloading_preference);
+        }
+      }
+
+      // L1463
+      void CodecManager::Stop() {
+        if (pimpl_->IsRunning()) {
+          pimpl_->Stop();
+        }
+      }
+
+      // L1469
+      types::CodecLocation CodecManager::GetCodecLocation(void) const {
+        if (!pimpl_->IsRunning()) {
+          return CodecLocation::HOST;
+        }
+        // ... 返回 ADSP / HOST / UNKNOWN
+      }
+    annotation: |
+      CodecManager 通过 PIMPL 模式（Pointer to IMPLementation）隐藏内部实现——
+      等价于 Java 的接口 + 实现类分离。pimpl_ 是一个指向 impl 的 unique_ptr，
+      公开方法全部转发给 pimpl_->xxx()。
+      GetCodecLocation 返回的 CodecLocation 枚举决定了 LC3 跑在哪里：
+      - HOST：CPU Software 路径，走 CodecInterface::Encode/Decode；
+      - ADSP：DSP Offload 路径，由 Controller/DSP 完成编解码；
+      Start() 的 offloading_preference 参数来自 LeAudioClient::Initialize 时透传的
+      `offloading_preference`（见 12.1 物料包 snippet_le_audio_initialize）。
+
+flags:
+  - name: "leaudio_use_context_type_manager"
+    file: "flags/leaudio.aconfig:141"
+    default: false
+    impact: "使用新的 context type manager 支持双向 GAME 场景（如游戏边玩边语音）"
+
+  - name: "dsa_use_codec_extensibility"
+    file: "flags/leaudio.aconfig:152"
+    default: false
+    impact: "通过 codec extensibility API 传递 DSA 参数（自适应比特率）"
+
+  - name: "leaudio_add_opus_hi_res_codec_type"
+    file: "flags/leaudio.aconfig:182"
+    default: false
+    impact: "向 LE Audio 添加 OPUS 高分辨率编解码类型（codec_format=vendor+Google）"
+
+  - name: "leaudio_dynamic_data_path_change"
+    file: "flags/leaudio.aconfig:200"
+    default: false
+    impact: "允许动态切换数据路径（Offload ↔ Software 无需重建 CIS）"
+
+terms:
+  - canonical: "LC3"
+    forbidden: ["Low Complexity Communication Codec 全称替代", "蓝牙音频编码 3"]
+    ref: "doc/术语表.md#G.3"
+
+  - canonical: "CodecInterface"
+    forbidden: ["编解码接口", "codec 接口类"]
+    ref: "doc/术语表.md#L.1"
+
+  - canonical: "CodecManager"
+    forbidden: ["编解码管理器", "codec 管理器"]
+    ref: "doc/术语表.md#L.2"
+
+  - canonical: "Offload / Software 路径"
+    forbidden: ["硬件编解码 / 软件编解码", "DSP 路径 / CPU 路径"]
+    ref: "doc/术语表.md#L.3"
+
+  - canonical: "CodecLocation"
+    forbidden: ["编解码位置", "codec 位置"]
+    ref: "doc/术语表.md#L.4"
+
+  - canonical: "BidirectionalPair"
+    forbidden: ["双向对", "双方向配对"]
+    ref: "doc/术语表.md#L.5"
+
+  - canonical: "LeAudioCodecId"
+    forbidden: ["LE Audio 编码 ID", "codec id"]
+    ref: "doc/术语表.md#L.6"
+
+  - canonical: "PIMPL（Pointer to IMPLementation）"
+    forbidden: ["pimpl 模式", "隐藏实现指针"]
+    ref: "doc/术语表.md#L.7"
+
+mermaid_templates:
+  - id: "T-FLOW-DECISION"
+    use_for: "LC3 路径选择决策树：CodecManager.GetCodecLocation() → HOST(Software/CPU) vs ADSP(Offload/Controller)"
+
+  - id: "T-ARCH-6"
+    use_for: "LC3 编解码六层路径：App PCM → A2dpService / LeAudioService → CodecManager → CodecInterface(Software) / HAL Offload → HCI ISO → Controller"
+
+  - id: "T-SEQ-5"
+    use_for: "Software LC3 编码时序：LeAudioClient → CodecInterface::InitEncoder → Encode(PCM) → ISO Data Path"
+
+section_outline:
+  s02_objectives:
+    min_words: 100
+    must_contain:
+      - "LC3"
+      - "CodecInterface"
+      - "CodecManager"
+      - "Offload"
+      - "Software"
+      - "CodecLocation"
+    template: |
+      读完本节，你能：
+      - 说出 LC3 帧的三个关键参数（采样率、帧时长、目标码率），理解它们如何影响时延与音质
+      - 区分 Software 编解码路径（CodecInterface::Encode/Decode）与 Offload 路径（Controller/DSP 自行编解码）
+      - 理解 CodecManager::GetCodecLocation() 的选路逻辑与返回值（HOST / ADSP）
+      - 找到 AOSP 中 LC3 配置文件的加载入口（audio_set_configurations.json + LoadConfigurationsFromFiles）
+      - 解释 LeAudioCodecIdLc3 与 LeAudioCodecIdOpus 的结构差异，理解 Vendor Specific Codec 的扩展方式
+
+  s03_prereq:
+    min_words: 80
+    must_link: ["12.1", "16.1"]
+
+  s04_scene:
+    min_words: 200
+    must_mention:
+      - "无线耳机"
+      - "Offload"
+      - "Software"
+    template_hint: |
+      建议场景：同一款车机 + 耳机，连接低端耳机（不支持 LC3 Offload）时
+      CodecManager 返回 HOST，CPU 跑 LC3 编码，你能在 logcat 看到
+      "LeAudioCodecManagerImpl: offload disabled"；换一副支持 Offload 的
+      耳机后返回 ADSP，CPU 占用骤降。通过这个对比展开讲 Software vs Offload 路径的差异。
+
+  s05_protocol:
+    min_words: 700
+    must_contain:
+      - "LC3"
+      - "帧时长"
+      - "采样率"
+      - "码率"
+      - "CodecInterface"
+      - "CodecManager"
+      - "CodecLocation"
+      - "Offload"
+      - "Software"
+      - "LeAudioCodecIdLc3"
+      - "BidirectionalPair"
+      - "AudioSetConfiguration"
+    must_have_hexdump: false
+    note: |
+      重点讲 LC3 的三个关键参数（采样率 8/16/24/32/44.1/48kHz、帧时长 7.5ms/10ms、
+      目标码率 16~320kbps）如何在 CodecConfigSetting 中表示，以及
+      LoadConfigurationsFromFiles 从 JSON 文件加载这些参数的流程。
+      不需要讲 LC3 算法内部（那属于 Bluetooth SIG 标准文档范畴）。
+
+  s06_call_chain:
+    min_layers: 5
+    format: |
+      LeAudioClient（Unicast）/ LeAudioBroadcaster（Broadcast）:
+        → 初始化时透传 offloading_preference
+      CodecManager::Start(offloading_preference):
+        → codec_manager_impl::Start() 探测 HAL 支持
+        → GetCodecLocation() 返回 HOST 或 ADSP
+      路径 A — Software（CodecLocation::HOST）:
+        → CodecInterface::CreateInstance(LeAudioCodecIdLc3)
+        → InitEncoder(pcm_config, codec_config)
+        → Encode(pcm_data, stride, out_size) → LC3 帧
+        → 通过 ISO Data Path 送入 Controller
+      路径 B — Offload（CodecLocation::ADSP）:
+        → BluetoothAudioClientInterface::StartSession()（见 16.1）
+        → UpdateAudioConfig(AudioConfiguration) → Controller/DSP 自行编码
+        → PCM 数据不经 CPU，直接在 DSP 上编成 LC3 帧
+
+  s07_source_guide:
+    min_refs: 8
+    all_from_allowed_refs: true
+    suggested_order:
+      - "le_audio_types.h:1355（LeAudioCodecIdLc3 常量定义）"
+      - "le_audio_types.h:1018（LeAudioCodecId 结构体）"
+      - "le_audio_types.h:505（BidirectionalPair 模板）"
+      - "le_audio_types.h:1292（AudioSetConfiguration 结构体）"
+      - "codec_interface.h:41（CodecInterface 类声明）"
+      - "codec_interface.h:55/59（InitEncoder / Encode API）"
+      - "codec_manager.h:59（CodecManager 类声明）"
+      - "codec_manager.h:103（GetInstance 单例）"
+      - "codec_manager.cc:112（codec_manager_impl 内部实现）"
+      - "codec_manager.cc:1457/1469（Start / GetCodecLocation）"
+      - "le_audio_set_configuration_provider_json.cc:54（JSON 配置文件路径）"
+      - "le_audio_set_configuration_provider_json.cc:387（LoadConfigurationsFromFiles）"
+      - "BluetoothLeAudio.java:1342（Framework getCodecStatus API）"
+
+  s08_simplified_code:
+    min_snippets: 2
+    required_snippets:
+      - "snippet_codec_interface_encode"
+      - "snippet_codec_manager_start"
+
+  s09_mermaid:
+    min_diagrams: 2
+    required_templates:
+      - "T-FLOW-DECISION"
+      - "T-ARCH-6"
+
+  s10_measured:
+    required_fields:
+      - "LC3 Software 编码 CPU 占用（单通道，典型帧时长 10ms，48kHz/96kbps）"
+      - "LC3 Software 编码延迟（编码一帧的耗时，单位 µs）"
+      - "Offload vs Software 端到端音频延迟对比"
+    data_source_hint: |
+      - `adb shell dumpsys bluetooth_manager | grep -i codec` 查看当前 codec 配置
+      - `adb shell top -p $(pidof com.android.bluetooth)` 观察 CPU 占用（Software 路径）
+      - simpleperf 在 bluetooth 进程上 profile `CodecInterface::Encode` 的耗时
+
+  s11_debug:
+    must_include_commands:
+      - "adb logcat -s bt_le_audio:V bluetooth_le_audio_codec_manager:V"
+      - "adb shell dumpsys bluetooth_manager | grep -A 10 codec"
+      - "adb shell getprop ro.bluetooth.leaudio_offload.supported"
+      - "adb shell device_config list bluetooth | grep leaudio"
+    car_integration_points:
+      - "Offload 开关由 sysprop `ro.bluetooth.leaudio_offload.supported`（只读，OEM 烧录）控制；同时 `persist.bluetooth.leaudio_offload.disabled` 可在运行时禁用"
+      - "LC3 配置文件路径 `/apex/com.android.bt/etc/bluetooth/le_audio/audio_set_configurations.json`；OEM 如需自定义帧时长或比特率，需替换此文件（APEX 覆盖）"
+      - "GetCodecLocation 返回 ADSP 的前提：HAL 支持 LeAudioHardwareOffload（LeAudioHalVerifier::SupportsLeAudioHardwareOffload()）"
+      - "双向（Sink + Source）LC3 配置用 BidirectionalPair<CodecConfigSetting> 表示，调试时注意区分 sink 和 source 各自的帧时长与码率可以不同（ALLOW_ASYMMETRIC flag）"
+
+  s12_faq_homework:
+    min_faqs: 4
+    min_quizzes: 3
+    min_homeworks: 2
+    suggested_faqs:
+      - "LC3 和 SBC 的核心区别是什么？为什么 LE Audio 用 LC3 而不是继续用 SBC？"
+      - "Software 路径和 Offload 路径的切换对用户透明吗？切换时会有声音中断吗？"
+      - "为什么 JSON 配置文件在 APEX 路径下？OEM 如何定制 LC3 参数？"
+      - "BidirectionalPair 是什么结构？为什么 LE Audio 需要双向配置？"
+    suggested_homeworks:
+      - "用 `adb shell getprop ro.bluetooth.leaudio_offload.supported` 确认设备是否支持 Offload；再用 `adb logcat -s bt_le_audio:V` 抓一次 LE Audio 连接日志，找到 CodecManager 初始化时打印的 CodecLocation"
+      - "在 AOSP 源码中找到 `audio_set_configurations.json` 文件（路径提示：在 APEX 目录或 `system/bt/le_audio/`），读取一条 LC3 配置条目，对照 CodecConfigSetting 结构体解释各字段含义"
+
+known_pitfalls:
+  - description: "不要把 LC3 的帧时长和 CIS 的 ISO Interval 混为一谈"
+    detail: |
+      LC3 帧时长（7.5ms 或 10ms）是编解码的时间粒度，决定编码延迟；
+      CIS 的 ISO Interval 是蓝牙等时流的调度间隔，通常是帧时长的整数倍。
+      帧时长 10ms + ISO Interval 10ms 是最常见的低延迟配置，详见 12.3。
+
+  - description: "不要假设所有 LE Audio 设备都支持 Offload"
+    detail: |
+      Offload 需要 Controller 和 Audio HAL 同时支持（LeAudioHalVerifier::SupportsLeAudioHardwareOffload）。
+      车机 OEM 如果芯片的 Audio HAL 尚未实现 LE Audio Offload 接口，GetCodecLocation 会返回 HOST，
+      LC3 就在 CPU 上跑，功耗上升约 3%（单通道）。
+
+  - description: "不要直接 new CodecInterface，要用 CreateInstance 工厂方法"
+    detail: |
+      `CodecInterface::CreateInstance(LeAudioCodecIdLc3)` 返回 unique_ptr，
+      确保生命周期安全（RAII）。直接构造 `CodecInterface obj(...)` 没有问题但不符合项目惯例，
+      且与 PIMPL 的 impl 析构顺序会有微妙差异。
+
+  - description: "LeAudioCodecIdOpus 是 Vendor Specific，不是 LC3 的变种"
+    detail: |
+      OPUS 在 LE Audio 中走 Vendor Specific Codec（coding_format = 0xFF，vendor_company_id = Google）。
+      `leaudio_add_opus_hi_res_codec_type` flag 开启后才有效，且需要对端耳机也支持。
+      不要把 OPUS 和 LC3 的 codec_id 混用。
+
+  - description: "JSON 配置文件在 APEX 下，模拟器上路径不同"
+    detail: |
+      `kLeAudioSetConfigs` 定义的路径是 `/apex/com.android.bt/...`，在模拟器或 AOSP 开发构建中
+      该路径可能不存在，LoadConfigurationsFromFiles 会失败并回退内置默认配置。
+      真机调试时先用 `adb shell ls /apex/com.android.bt/etc/bluetooth/le_audio/` 确认文件存在。
+
+cross_links:
+  - target: "../12_LE_Audio/12.1_LE_Audio_全景.md"
+    anchor_text: "LE Audio 全景与 Unicast/Broadcast 概述详见 12.1"
+
+  - target: "../12_LE_Audio/12.3_CIS_BIS_ISO.md"
+    anchor_text: "LC3 帧如何通过 CIS/BIS 等时流传输详见 12.3"
+
+  - target: "../16_音频路由与AudioHAL/16.2_Offload路径.md"
+    anchor_text: "LE Audio Offload 路径的 HAL 层细节详见 16.2"
