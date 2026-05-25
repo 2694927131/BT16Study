@@ -1,0 +1,334 @@
+# ============================================================================
+# 12.1 LE Audio 全景 —— 物料包（v2 试点节 #2）
+# ============================================================================
+# 制作者：Claude Opus 4.7
+# 制作日期：2026-05-25
+# 验证 AOSP 基线：android-16.0.0_r5
+# 适配模型档位：中（DeepSeek V4 / GLM 5.1 / Sonnet 4.6 / Gemini 2.5 Pro）
+# ============================================================================
+# 本节是 ch12 LE Audio 章的入门概览节，目标是让读者建立 LE Audio 的整体
+# 心智模型（与 Classic Audio 的关系、Unicast/Broadcast 双轨、TMAP/HAP/Auracast
+# 五大子集、AOSP 代码组织），后续 12.2-12.6 各节再分别深入。
+# ============================================================================
+
+meta:
+  section_id: "12.1"
+  title: "LE Audio 全景：Unicast / Broadcast / Auracast / TMAP / HAP"
+  priority: P0
+  audience:
+    - "车机蓝牙集成工程师"
+    - "音频/HAL 工程师"
+    - "Profile 维护工程师"
+  prerequisites:
+    - "00.1"
+    - "00.3"
+    - "08.2"
+  related_sections:
+    - "12.2"
+    - "12.3"
+    - "12.4"
+    - "12.5"
+    - "12.6"
+    - "16.1"
+    - "16.2"
+  last_verified: "2026-05-25"
+  verified_against_aosp: "android-16.0.0_r5"
+  estimated_reading_min: 30
+  estimated_practice_min: 60
+
+allowed_refs:
+  - path: "framework/java/android/bluetooth/BluetoothLeAudio.java"
+    lines: [68, 813, 849, 1047, 1101]
+    purpose: "Framework 公开 API：LE Audio Unicast Profile 入口（connect/disconnect/setActiveDevice/getGroupId）"
+    verified_at: "2026-05-25"
+
+  - path: "framework/java/android/bluetooth/BluetoothLeBroadcast.java"
+    lines: [60, 460, 495, 606]
+    purpose: "Framework 公开 API：LE Audio Broadcast Profile 入口（startBroadcast/stopBroadcast）"
+    verified_at: "2026-05-25"
+
+  - path: "android/app/src/com/android/bluetooth/le_audio/LeAudioService.java"
+    lines: [114, 873, 927, 2590]
+    purpose: "Java Service 层：LeAudioService（connect/disconnect/setActiveDevice）"
+    verified_at: "2026-05-25"
+
+  - path: "android/app/src/com/android/bluetooth/le_audio/LeAudioStateMachine.java"
+    lines: [136, 249, 466]
+    purpose: "Java 状态机：Disconnected / Connecting / Connected 三状态"
+    verified_at: "2026-05-25"
+
+  - path: "system/bta/le_audio/client.cc"
+    lines: [234, 274, 7749, 7832]
+    purpose: "BTA/Stack 层：LeAudioClientImpl 类与 Initialize/Cleanup 入口"
+    verified_at: "2026-05-25"
+
+  - path: "system/bta/le_audio/broadcaster/broadcaster.cc"
+    lines: [96, 108, 1396]
+    purpose: "BTA/Stack 层：LeAudioBroadcasterImpl 类与 Initialize 入口"
+    verified_at: "2026-05-25"
+
+  - path: "flags/leaudio.aconfig"
+    lines: [4, 12, 20, 28, 36, 46, 71]
+    purpose: "LE Audio 相关 aconfig flag（broadcast monitor / volume control / VOCS / direction opening 等）"
+    verified_at: "2026-05-25"
+
+code_snippets:
+  - id: "snippet_le_audio_initialize"
+    source: "system/bta/le_audio/client.cc:7749-7758"
+    language: "cpp"
+    code: |
+      // L7749
+      void LeAudioClient::Initialize(
+              bluetooth::le_audio::LeAudioClientCallbacks* callbacks_, base::Closure initCb,
+              base::Callback<bool()> hal_2_1_verifier,
+              const std::vector<bluetooth::le_audio::btle_audio_codec_config_t>& offloading_preference) {
+        std::scoped_lock<std::mutex> lock(instance_mutex);
+        if (instance) {
+          log::error("Already initialized");
+          return;
+        }
+        // ... 创建 LeAudioClientImpl 单例，注册回调、初始化 codec、加载持久化的 group ...
+      }
+    annotation: |
+      LE Audio Unicast 的 Native 入口。LeAudioService.java 通过 JNI 调用进入此处。
+      `offloading_preference` 参数告诉 Stack 哪些 codec 配置允许 offload 到 Controller（节省功耗），
+      其他配置回退到 Software 路径（CPU 跑 LC3 编解码）。
+      这里用 `std::scoped_lock` 加锁是 RAII —— 等价于 Java 的 `synchronized` 块。
+
+  - id: "snippet_le_audio_broadcaster_init"
+    source: "system/bta/le_audio/broadcaster/broadcaster.cc:1396-1400"
+    language: "cpp"
+    code: |
+      // L1396
+      void LeAudioBroadcaster::Initialize(bluetooth::le_audio::LeAudioBroadcasterCallbacks* callbacks,
+                                          base::Callback<bool()> hal_2_1_verifier) {
+        // 初始化 LeAudioBroadcasterImpl 单例（与 Unicast 完全独立的另一条链路）
+      }
+    annotation: |
+      LE Audio Broadcast 的 Native 入口。注意 Broadcast 和 Unicast 是 **完全独立** 的两套
+      代码路径：Unicast 走 client.cc + state_machine.cc + ASE/ASCS GATT 协议；
+      Broadcast 走 broadcaster/*.cc + BIS/PA 协议。理解这一点对后续 12.3 (CIS/BIS) 至关重要。
+
+flags:
+  - name: "leaudio_broadcast_monitor_source_sync_status"
+    file: "flags/leaudio.aconfig:4"
+    default: true
+    impact: "Broadcast 源同步状态新 API"
+
+  - name: "leaudio_broadcast_volume_control_for_connected_devices"
+    file: "flags/leaudio.aconfig:12"
+    default: true
+    impact: "为已连接的 Broadcast 接收器提供音量控制"
+
+  - name: "metadata_api_inactive_audio_device_upon_connection"
+    file: "flags/leaudio.aconfig:20"
+    default: true
+    impact: "连接时通过 API 将设备设为 inactive"
+
+  - name: "leaudio_multiple_vocs_instances_api"
+    file: "flags/leaudio.aconfig:28"
+    default: true
+    impact: "支持多 VOCS 实例（多输出音量偏移）"
+
+  - name: "leaudio_dev_options_respect_profile_sysprops"
+    file: "flags/leaudio.aconfig:71"
+    default: false
+    impact: "开发者选项遵循 profile sysprops"
+
+terms:
+  - canonical: "LE Audio"
+    forbidden: ["低功耗音频", "蓝牙低能耗音频"]
+    ref: "doc/术语表.md#G.1"
+
+  - canonical: "Unicast / Broadcast"
+    forbidden: ["单播/广播音频"]
+    ref: "doc/术语表.md#G.2"
+
+  - canonical: "LC3"
+    forbidden: ["Low Complexity Communication Codec 全称替代", "蓝牙音频编码 3"]
+    ref: "doc/术语表.md#G.3"
+
+  - canonical: "CIS / BIS"
+    forbidden: ["连接等时流", "广播等时流"]
+    ref: "doc/术语表.md#G.4"
+
+  - canonical: "TMAP / HAP / GMAP"
+    forbidden: ["电话与媒体音频规范", "助听器音频规范", "游戏与媒体音频规范"]
+    ref: "doc/术语表.md#G.5"
+
+  - canonical: "Auracast"
+    forbidden: ["奥拉广播", "蓝牙广播音频"]
+    ref: "doc/术语表.md#G.6"
+
+  - canonical: "ASE / ASCS"
+    forbidden: ["音频流端点", "音频流控制服务"]
+    ref: "doc/术语表.md#G.7"
+
+  - canonical: "PACS / BAP"
+    forbidden: ["已发布音频能力服务", "基础音频规范"]
+    ref: "doc/术语表.md#G.8"
+
+  - canonical: "Central / Peripheral"
+    forbidden: ["主设备", "从设备", "Master/Slave"]
+    ref: "doc/术语表.md#C.1"
+
+mermaid_templates:
+  - id: "T-ARCH-6"
+    use_for: "LE Audio 六层架构：App → Framework → LeAudioService → JNI → BTA LeAudioClient → HCI/ISO"
+
+  - id: "T-FLOW-DECISION"
+    use_for: "Unicast vs Broadcast 选型决策树（用例 / 听众数 / 设备能力）"
+
+  - id: "T-ARCH-MODULE"
+    use_for: "LE Audio Profile 矩阵：BAP / PACS / ASCS / CSIP / VCP / MCP / TBS / CCP / TMAP / HAP / GMAP"
+
+section_outline:
+  s02_objectives:
+    min_words: 100
+    must_contain:
+      - "Unicast"
+      - "Broadcast"
+      - "LC3"
+      - "Auracast"
+    template: |
+      读完本节，你能：
+      - 用一句话说清 LE Audio 与 Classic Audio（A2DP/HFP）的本质区别
+      - 列出 LE Audio 的 5 类规范集（BAP/CAP/TMAP/HAP/GMAP）及各自定位
+      - 区分 Unicast 与 Broadcast 的协议路径（CIS vs BIS）与典型用例
+      - 说出 AOSP 中 LE Audio 的 4 层代码组织（Framework → Service → JNI → BTA）
+      - 指出车机场景下 LE Audio 的 3 个最常见用例
+
+  s03_prereq:
+    min_words: 80
+    must_link: ["00.1", "00.3", "08.2"]
+
+  s04_scene:
+    min_words: 250
+    must_mention:
+      - "无线耳机"
+      - "公共场所广播"
+      - "助听器"
+    template_hint: |
+      建议故事：车主停车后通过 Auracast 把车载导航音同时广播给副驾的耳机和
+      后排两位戴助听器的乘客 —— 一条链路四个听众，且每路声音都准时同步、
+      不抢车机主声道。展开讲：① 这种"一发多收"在 Classic 时代为什么做不到；
+      ② Unicast / Broadcast 各自承担什么角色；③ 助听器走 HAP 与普通耳机走 TMAP
+      的差别。
+
+  s05_protocol:
+    min_words: 800
+    must_contain:
+      - "LE Audio"
+      - "Unicast"
+      - "Broadcast"
+      - "CIS"
+      - "BIS"
+      - "LC3"
+      - "BAP"
+      - "TMAP"
+      - "HAP"
+      - "Auracast"
+      - "Bluetooth Core Spec Vol 6"
+    must_have_hexdump: false
+
+  s06_call_chain:
+    min_layers: 5
+    format: |
+      App:        startUsingLeAudio(...) / startBroadcast(...)
+      Framework:  BluetoothLeAudio.java / BluetoothLeBroadcast.java
+      Service:    LeAudioService.java（Unicast） / LeAudioBroadcastService（Broadcast）
+      JNI:        LeAudioNativeInterface.java / LeAudioBroadcasterNativeInterface.java
+      BTA:        system/bta/le_audio/client.cc（Unicast） / broadcaster/broadcaster.cc（Broadcast）
+      HCI/ISO:    LE Set CIG Parameters / LE Create BIG / ISO Data Path
+
+  s07_source_guide:
+    min_refs: 8
+    all_from_allowed_refs: true
+    suggested_order:
+      - "BluetoothLeAudio.java:68（Framework Unicast API 入口类）"
+      - "BluetoothLeBroadcast.java:60（Framework Broadcast API 入口类）"
+      - "LeAudioService.java:114（Java Service 类声明）"
+      - "LeAudioService.java:873（connect 入口）"
+      - "LeAudioStateMachine.java:136/249/466（三状态状态机）"
+      - "client.cc:274（LeAudioClientImpl 类，Unicast 核心）"
+      - "client.cc:7749（LeAudioClient::Initialize Native 入口）"
+      - "broadcaster.cc:108（LeAudioBroadcasterImpl 类，Broadcast 核心）"
+      - "broadcaster.cc:1396（LeAudioBroadcaster::Initialize Native 入口）"
+
+  s08_simplified_code:
+    min_snippets: 2
+    required_snippets:
+      - "snippet_le_audio_initialize"
+      - "snippet_le_audio_broadcaster_init"
+
+  s09_mermaid:
+    min_diagrams: 2
+    required_templates:
+      - "T-ARCH-6"
+      - "T-FLOW-DECISION"
+
+  s10_measured:
+    required_fields:
+      - "时延（Unicast 端到端延迟，典型/p95，对比 A2DP）"
+      - "成功率（CIS 建立成功率，含弱信号场景）"
+      - "重试次数（CIS 重连重试次数统计）"
+    data_source_hint: "可从 dumpsys bluetooth_manager metrics、BQR、或 statsd LeAudio 上报获取"
+
+  s11_debug:
+    must_include_commands:
+      - "adb logcat -s bt_le_audio:V LeAudioService:V LeAudioStateMachine:V"
+      - "adb shell dumpsys bluetooth_manager | grep -A 50 LeAudio"
+      - "btsnoop + Wireshark filter: bthci_iso || btatt"
+      - "adb shell device_config list bluetooth | grep leaudio"
+    car_integration_points:
+      - "OEM 通常通过 sysprop bluetooth.profile.bap.unicast.client.enabled / bluetooth.profile.bap.broadcast.* 开关 LE Audio 子集"
+      - "车机若想做 Broadcast 源（向副驾耳机/助听器广播），需要确认 Controller 支持 BIG（BLE 5.2+ Isochronous Channel）"
+      - "Codec offload：通过 audio HAL leAudioOffload 接口，未支持时回退 Software LC3（CPU 占用 ~3%）"
+
+  s12_faq_homework:
+    min_faqs: 4
+    min_quizzes: 3
+    min_homeworks: 2
+    suggested_faqs:
+      - "LE Audio 会替代 A2DP/HFP 吗？过渡期车机如何兼容？"
+      - "Unicast 和 Broadcast 能不能同时跑？需要什么 Controller 能力？"
+      - "Auracast 和普通 BLE 广播是同一个东西吗？"
+      - "TMAP / HAP / GMAP 这三个 'AP' 到底有什么区别？车机要支持哪个？"
+    suggested_homeworks:
+      - "用 dumpsys bluetooth_manager 找出当前设备启用了哪些 LE Audio 子集，对照 sysprops 验证"
+      - "用 btsnoop 抓一次 LE Audio Unicast 连接，在 Wireshark 中标出 PACS Discover → ASCS Configure → CIS Established 三个里程碑"
+
+known_pitfalls:
+  - description: "不要把 LE Audio 当成 A2DP 的 LE 版"
+    detail: "LE Audio 重新设计了协议栈：用 LC3 取代 SBC、用 CIS/BIS 取代 L2CAP+AVDTP、用 BAP/ASCS 取代 A2DP/AVDTP；它是 BLE 5.2 引入的全新音频架构"
+
+  - description: "不要把 Auracast 和 BLE Mesh 混为一谈"
+    detail: "Auracast 是 LE Audio Broadcast 的市场品牌名（由 Bluetooth SIG 推广），走 BIS/PA；BLE Mesh 是另一个完全独立的网络层协议（走 GAP Advertising + GATT），两者无关"
+
+  - description: "不要假设所有 BLE 5.2+ 设备都支持 LE Audio"
+    detail: "LE Audio 需要 Controller 支持 Isochronous Channels（CIS/BIS）；早期 BLE 5.2 芯片可能只支持 LE 2M PHY 但不含 ISO，要用 LE Read Local Supported Commands 验证"
+
+  - description: "Unicast 和 Broadcast 是两套独立 Service"
+    detail: "LeAudioService 只管 Unicast；Broadcast 是 LeAudioBroadcastService（Native 端为 LeAudioBroadcasterImpl）；两者的 GATT 服务、状态机、HAL 路径完全独立，调试时不要混查日志"
+
+  - description: "不要用 'Master/Slave' 描述 LE Audio 角色"
+    detail: "LE Audio 中应使用 Central（车机/手机）/ Peripheral（耳机/助听器）；Broadcast 中应使用 Source（发射端）/ Sink（接收端）"
+
+cross_links:
+  - target: "../12_LE_Audio/12.2_LC3编解码.md"
+    anchor_text: "LC3 编解码细节详见 12.2"
+
+  - target: "../12_LE_Audio/12.3_CIS_BIS_ISO.md"
+    anchor_text: "CIS / BIS / ISO Channel 协议详见 12.3"
+
+  - target: "../12_LE_Audio/12.4_CSIP_VCP_MCP_TBS.md"
+    anchor_text: "Profile 矩阵（CSIP/VCP/MCP/TBS）详见 12.4"
+
+  - target: "../12_LE_Audio/12.5_ASHA助听器.md"
+    anchor_text: "ASHA 助听器对比详见 12.5"
+
+  - target: "../12_LE_Audio/12.6_车机接入.md"
+    anchor_text: "车机 LE Audio 接入与故障排查详见 12.6"
+
+  - target: "../16_音频路由/16.2_Audio_Offload.md"
+    anchor_text: "Codec Offload 与 Software 回退路径详见 16.2"
