@@ -1,0 +1,396 @@
+# ============================================================================
+# 16.1 AudioFlinger / AudioPolicyManager / AudioManager 三件套与蓝牙的接合
+# 物料包（v2 试点节 #3 — 路径 A 跨域压力测试）
+# ============================================================================
+# 制作者：Claude Sonnet 4.6
+# 制作日期：2026-05-26
+# 验证 AOSP 基线：android-16.0.0_r5
+# 适配模型档位：中（DeepSeek V4 / GLM 5.1 / Sonnet 4.6 / Gemini 2.5 Pro）
+# ============================================================================
+# 本节不讲 AudioFlinger/APM 内部，只讲蓝牙侧"对接缝"：
+#   ActiveDeviceManager 如何切换 Active Device → 通知 AudioManager →
+#   AudioPolicy 重路由音频 → BluetoothAudio HAL 建立 Session。
+# 后续 16.2 再深入 A2DP/HFP/LE Audio 各自的 Offload 路径。
+# ============================================================================
+
+meta:
+  section_id: "16.1"
+  title: "AudioFlinger / AudioPolicyManager / AudioManager 三件套与蓝牙的接合"
+  priority: P0
+  audience:
+    - "车机蓝牙集成工程师"
+    - "音频/HAL 工程师"
+    - "Framework 工程师（音频路由故障排查）"
+  prerequisites:
+    - "00.1"
+    - "06.1"
+    - "07.1"
+    - "12.1"
+  related_sections:
+    - "16.2"
+    - "16.3"
+    - "16.4"
+    - "17.1"
+  last_verified: "2026-05-26"
+  verified_against_aosp: "android-16.0.0_r5"
+  estimated_reading_min: 35
+  estimated_practice_min: 60
+
+allowed_refs:
+  - path: "android/app/src/com/android/bluetooth/btservice/ActiveDeviceManager.java"
+    lines: [111, 1040, 1044, 1081, 1148, 1152]
+    purpose: "ActiveDeviceManager：管理 A2DP / HFP / LE Audio 三路 Active Device 切换逻辑"
+    verified_at: "2026-05-26"
+
+  - path: "android/app/src/com/android/bluetooth/a2dp/A2dpService.java"
+    lines: [99, 123, 138, 141]
+    purpose: "A2dpService：持有 AudioManager 引用、mA2dpOffloadEnabled 标志、注册 AudioDeviceCallback"
+    verified_at: "2026-05-26"
+
+  - path: "system/audio_hal_interface/hal_version_manager.h"
+    lines: [116, 118, 120]
+    purpose: "HalVersionManager：运行时检测 HIDL 2.0/2.1 或 AIDL，决定走哪条 HAL 路径"
+    verified_at: "2026-05-26"
+
+  - path: "system/audio_hal_interface/hal_version_manager.cc"
+    lines: [101]
+    purpose: "HalVersionManager::GetHalVersion() 实现：加锁读取 hal_version_ 单例"
+    verified_at: "2026-05-26"
+
+  - path: "system/audio_hal_interface/a2dp_encoding.h"
+    lines: [82, 86, 96, 97]
+    purpose: "A2DP audio_hal_interface：init/cleanup/start_session/end_session 顶层 API"
+    verified_at: "2026-05-26"
+
+  - path: "system/audio_hal_interface/hfp_client_interface.h"
+    lines: [30, 45, 60]
+    purpose: "HfpClientInterface：HFP Decode/Encode 内部类，AIDL 模式专用"
+    verified_at: "2026-05-26"
+
+  - path: "system/audio_hal_interface/le_audio_software.h"
+    lines: [84, 113, 148]
+    purpose: "LeAudioClientInterface：Sink（播放）/ Source（录音）两个内部类，管理 LE Audio Session"
+    verified_at: "2026-05-26"
+
+  - path: "system/audio_hal_interface/aidl/client_interface_aidl.h"
+    lines: [65, 82, 89, 91]
+    purpose: "BluetoothAudioClientInterface：AIDL 客户端通用接口，StartSession/EndSession/UpdateAudioConfig"
+    verified_at: "2026-05-26"
+
+  - path: "system/audio_hal_interface/aidl/client_interface_aidl.cc"
+    lines: [62, 332]
+    purpose: "BluetoothAudioClientInterface 构造函数 + StartSession() 实现（通过 FMQ 建立数据通路）"
+    verified_at: "2026-05-26"
+
+code_snippets:
+  - id: "snippet_active_device_manager_a2dp"
+    source: "android/app/src/com/android/bluetooth/btservice/ActiveDeviceManager.java:1044-1078"
+    language: "java"
+    code: |
+      // L1044
+      private boolean setA2dpActiveDevice(
+              @Nullable BluetoothDevice device, boolean hasFallbackDevice) {
+          Log.d(TAG, "setA2dpActiveDevice(" + device + ")"
+                  + (device == null ? " hasFallbackDevice=" + hasFallbackDevice : ""));
+          synchronized (mLock) {
+              if (mPendingActiveDevice != null) {
+                  mHandler.removeCallbacksAndMessages(mPendingActiveDevice);
+                  mPendingActiveDevice = null;
+              }
+          }
+          final var a2dp = mAdapterService.getA2dpService();
+          if (a2dp.isEmpty()) {
+              return false;
+          }
+          boolean success = false;
+          if (device == null) {
+              success = a2dp.get().removeActiveDevice(!hasFallbackDevice);
+          } else {
+              success = a2dp.get().setActiveDevice(device);
+          }
+          if (!success) {
+              return false;
+          }
+          synchronized (mLock) {
+              mA2dpActiveDevice = device;
+          }
+          return true;
+      }
+    annotation: |
+      ActiveDeviceManager 是 A2DP / HFP / LE Audio 三路音频的"仲裁者"：当设备连接/断开/
+      优先级变化时，由它决定谁是当前活跃设备，并调用各 Profile Service 的 setActiveDevice()。
+      device == null 表示"清除活跃设备"（例如耳机拔出），hasFallbackDevice 告诉 A2DP
+      是否还有备选设备可切换——若无则彻底停止蓝牙音频路由。
+      mLock 是 synchronized，对应 C++ 的 std::mutex；整个方法是三路互斥中的 A2DP 分支。
+
+  - id: "snippet_bluetooth_audio_start_session"
+    source: "system/audio_hal_interface/aidl/client_interface_aidl.cc:332-360"
+    language: "cpp"
+    code: |
+      // L332
+      int BluetoothAudioClientInterface::StartSession() {
+        std::lock_guard<std::mutex> guard(internal_mutex_);
+        if (provider_ == nullptr) {
+          log::error("BluetoothAudioHal nullptr");
+          session_started_ = false;
+          return -EINVAL;
+        }
+        if (session_started_) {
+          log::error("session started already");
+          return -EBUSY;
+        }
+        std::shared_ptr<IBluetoothAudioPort> stack_if =
+                ndk::SharedRefBase::make<BluetoothAudioPortImpl>(transport_, provider_);
+        std::unique_ptr<DataMQ> data_mq;
+        DataMQDesc mq_desc;
+        auto aidl_retval = provider_->startSession(
+                stack_if, transport_->GetAudioConfiguration(),
+                latency_modes_, &mq_desc);
+        // ... 检查 aidl_retval, 初始化 FMQ ...
+      }
+    annotation: |
+      BluetoothAudioClientInterface::StartSession() 是蓝牙协议栈侧向 Audio HAL 发起
+      "打开音频通路"的核心动作。
+      - `provider_` 是已绑定的 IBluetoothAudioProvider AIDL 接口（由对端 Audio HAL 实现）
+      - `BluetoothAudioPortImpl` 是反向回调：Audio HAL → 蓝牙栈（流控制命令如 SuspendStream）
+      - `mq_desc` 接收 Fast Message Queue 描述符 —— 后续音频数据就通过这条 FMQ 高速传输，
+        不走 Binder（避免延迟）。等价于 Java 的 SharedMemory / MemoryFile。
+      - `latency_modes_` 传入 FREE 或 LOW_LATENCY，影响 Audio HAL 的 buffer 策略。
+
+flags: []  # 16.1 无直接控制 flag；Offload flag 在 16.2 详述
+
+terms:
+  - canonical: "ActiveDeviceManager"
+    forbidden: ["active device 管理器", "活跃设备管理器"]
+    ref: "doc/术语表.md#A.1"
+
+  - canonical: "AudioFlinger"
+    forbidden: ["音频混音器", "Android 音频服务核心"]
+    ref: "doc/术语表.md#A.2"
+
+  - canonical: "AudioPolicyManager"
+    forbidden: ["APM", "音频策略管理器"]
+    ref: "doc/术语表.md#A.3"
+
+  - canonical: "Audio HAL"
+    forbidden: ["音频硬件抽象层", "HAL 音频层"]
+    ref: "doc/术语表.md#A.4"
+
+  - canonical: "BluetoothAudioClientInterface"
+    forbidden: ["蓝牙音频客户端接口", "BT Audio Client"]
+    ref: "doc/术语表.md#A.5"
+
+  - canonical: "FMQ（Fast Message Queue）"
+    forbidden: ["快消息队列", "快速消息队列"]
+    ref: "doc/术语表.md#A.6"
+
+  - canonical: "HIDL / AIDL"
+    forbidden: ["硬件接口描述语言", "Android 接口定义语言（全称替代缩写）"]
+    ref: "doc/术语表.md#A.7"
+
+  - canonical: "setActiveDevice"
+    forbidden: ["set active device（拆开写）", "激活设备"]
+    ref: "doc/术语表.md#A.8"
+
+mermaid_templates:
+  - id: "T-ARCH-6"
+    use_for: "音频路由六层架构：App → AudioManager → AudioPolicyManager → Audio HAL → BluetoothAudioClientInterface → 蓝牙协议栈"
+
+  - id: "T-SEQ-5"
+    use_for: "A2DP setActiveDevice 到 StartSession 完整时序：ActiveDeviceManager → A2dpService → NativeInterface → audio_hal_interface → AIDL Provider"
+
+  - id: "T-FLOW-DECISION"
+    use_for: "HAL 版本选择决策树：HalVersionManager.GetHalTransport() → AIDL / HIDL 2.1 / HIDL 2.0 三路"
+
+section_outline:
+  s02_objectives:
+    min_words: 100
+    must_contain:
+      - "ActiveDeviceManager"
+      - "AudioManager"
+      - "Audio HAL"
+      - "StartSession"
+      - "FMQ"
+    template: |
+      读完本节，你能：
+      - 说出 Android 音频路由的"三件套"（AudioFlinger / AudioPolicyManager / AudioManager）
+        各自的职责，以及蓝牙在哪一层插入
+      - 画出从 A2DP setActiveDevice 到 Audio HAL StartSession 的完整调用链（5 层）
+      - 解释 ActiveDeviceManager 如何在 A2DP / HFP / LE Audio 三路之间仲裁 Active Device
+      - 说清 HIDL vs AIDL 两条 Audio HAL 路径，以及 HalVersionManager 如何在运行时选择
+      - 理解 FMQ（Fast Message Queue）在蓝牙音频数据传输中的作用
+
+  s03_prereq:
+    min_words: 80
+    must_link: ["00.1", "06.1", "07.1", "12.1"]
+
+  s04_scene:
+    min_words: 200
+    must_mention:
+      - "导航提示音"
+      - "蓝牙电话"
+      - "A2DP"
+    template_hint: |
+      故事建议：车主正在用蓝牙耳机听音乐（A2DP 路由激活），
+      这时手机来电话——车机需要把 Active Device 从 A2DP 切换到 HFP，
+      同时 AudioPolicyManager 把 STREAM_MUSIC 哑音、把 SCO 打开。
+      用这个故事串联：AudioManager 通知 → AudioPolicyManager 重路由 →
+      A2dpService/HeadsetService 切换 Session → Audio HAL 重新 StartSession。
+
+  s05_protocol:
+    min_words: 700
+    must_contain:
+      - "AudioFlinger"
+      - "AudioPolicyManager"
+      - "AudioManager"
+      - "ActiveDeviceManager"
+      - "setActiveDevice"
+      - "Audio HAL"
+      - "BluetoothAudioClientInterface"
+      - "StartSession"
+      - "FMQ"
+      - "AIDL"
+      - "HIDL"
+      - "HalVersionManager"
+    must_have_hexdump: false
+    note: |
+      重点讲"接缝"而非内部：AudioFlinger/APM 的内部结构属于 AOSP 框架层，
+      本节只讲蓝牙侧在哪里注入 AudioDeviceCallback、如何调用 setActiveDevice、
+      以及 audio_hal_interface 如何抽象 HIDL/AIDL 两条路。
+
+  s06_call_chain:
+    min_layers: 5
+    format: |
+      用户操作 / 设备连接事件:
+        → AdapterService / A2dpService（设备连接事件）
+      ActiveDeviceManager:
+        → setA2dpActiveDevice() / setHfpActiveDevice() / setLeAudioActiveDevice()
+        → A2dpService.setActiveDevice() / HeadsetService.setActiveDevice()
+      A2dpService / HeadsetService:
+        → 通知 AudioManager（registerAudioDeviceCallback 回调 / setBluetoothA2dpOn）
+      AudioPolicyManager（外部依赖，AOSP system/media）:
+        → 重路由音频流，选择最优输出设备
+      audio_hal_interface:
+        → HalVersionManager.GetHalVersion() 选路
+        → bluetooth::audio::a2dp::start_session() / HfpClientInterface::StartSession()
+        → BluetoothAudioClientInterface::StartSession()（AIDL 路径）
+        → provider_->startSession() → FMQ 建立
+
+  s07_source_guide:
+    min_refs: 8
+    all_from_allowed_refs: true
+    suggested_order:
+      - "ActiveDeviceManager.java:111（类声明：A2DP/HFP/LE Audio 三路仲裁入口）"
+      - "ActiveDeviceManager.java:1040（setA2dpActiveDevice 主入口）"
+      - "ActiveDeviceManager.java:1081（setHfpActiveDevice 主入口）"
+      - "ActiveDeviceManager.java:1148（setLeAudioActiveDevice 主入口）"
+      - "A2dpService.java:123（AudioManager 初始化）"
+      - "A2dpService.java:141（registerAudioDeviceCallback）"
+      - "hal_version_manager.h:116（HalVersionManager 类）"
+      - "hal_version_manager.cc:101（GetHalVersion 实现）"
+      - "a2dp_encoding.h:82/96（init/start_session A2DP HAL API）"
+      - "hfp_client_interface.h:30（HfpClientInterface HFP HAL API）"
+      - "le_audio_software.h:84/113（LeAudioClientInterface Sink）"
+      - "client_interface_aidl.h:65/82（BluetoothAudioClientInterface AIDL）"
+      - "client_interface_aidl.cc:62/332（构造函数 + StartSession 实现）"
+
+  s08_simplified_code:
+    min_snippets: 2
+    required_snippets:
+      - "snippet_active_device_manager_a2dp"
+      - "snippet_bluetooth_audio_start_session"
+
+  s09_mermaid:
+    min_diagrams: 2
+    required_templates:
+      - "T-SEQ-5"
+      - "T-FLOW-DECISION"
+
+  s10_measured:
+    required_fields:
+      - "音频路由切换时延（从 setActiveDevice 到 Audio HAL StartSession 完成，A2DP 典型值）"
+      - "A2DP → HFP 切换时延（电话接入场景，含 SCO 建立）"
+      - "AIDL vs HIDL Audio HAL 启动时延对比"
+    data_source_hint: |
+      可从以下路径获取数据：
+      - adb logcat -s A2dpService:V AudioDeviceBroker:V 过滤时间戳
+      - perfetto trace（audio 相关 atrace tag）
+      - dumpsys media.audio_policy 查看当前路由
+
+  s11_debug:
+    must_include_commands:
+      - "adb logcat -s ActiveDeviceManager:V A2dpService:V bt_audio_hw:V"
+      - "adb shell dumpsys media.audio_policy | grep -A 20 bluetooth"
+      - "adb shell dumpsys bluetooth_manager | grep -A 20 ActiveDevice"
+      - "adb shell dumpsys media.audio_flinger | grep -i bluetooth"
+    car_integration_points:
+      - "车机 OEM 通常定制 AudioPolicyConfiguration.xml 把蓝牙 A2DP 输出设备优先级设为最高，确保连接后自动路由"
+      - "HalVersionManager 在首次 init 时探测 Audio HAL 版本；若 OEM 把 Audio HAL 升级到 AIDL（Android 14+），务必重测切换时延"
+      - "多音区车机（前排/后排独立音频）需要在 AudioPolicyManager 中配置多路蓝牙输出，ActiveDeviceManager 的仲裁逻辑可能需要 OEM 扩展"
+      - "车机 A2DP Offload 路径（mA2dpOffloadEnabled）：Offload 开启时 Audio HAL 自己跑 SBC/AAC 编码，CPU 不参与；关闭时回退 Software 路径，CPU 占用显著上升"
+
+  s12_faq_homework:
+    min_faqs: 4
+    min_quizzes: 3
+    min_homeworks: 2
+    suggested_faqs:
+      - "AudioFlinger、AudioPolicyManager、AudioManager 三者分工是什么？蓝牙在哪一层插入？"
+      - "为什么 A2DP 音乐和 HFP 电话不能同时走同一条 Audio HAL Session？"
+      - "HIDL 和 AIDL Audio HAL 有什么区别？车机怎么知道该用哪条？"
+      - "ActiveDeviceManager 是如何决定当手机来电时把音频从 A2DP 切到 HFP 的？"
+    suggested_homeworks:
+      - "用 adb logcat -s ActiveDeviceManager:V 抓一次手机来电的日志，找到 setA2dpActiveDevice(null) 和 setHfpActiveDevice(device) 两条日志，计算切换间隔"
+      - "用 dumpsys media.audio_policy 查看当前蓝牙设备的 AudioPort 信息，对照 AudioPolicyConfiguration.xml 确认 Profile 匹配关系"
+
+known_pitfalls:
+  - description: "不要把 AudioFlinger 和 Audio HAL 混为一谈"
+    detail: |
+      AudioFlinger 是 Android 侧的混音引擎（运行在 media.audio_flinger 进程），
+      Audio HAL 是 AudioFlinger 与硬件之间的 HAL 层（HIDL/AIDL 服务）。
+      蓝牙的 audio_hal_interface（BluetoothAudioClientInterface）是蓝牙侧实现的 Audio HAL Client，
+      对端是 BluetoothAudioProvider（HAL Server，由芯片厂商/OEM 实现，不在本仓库）。
+      调试时不要把 AudioFlinger 日志和 bluetooth audio_hw 日志混用。
+
+  - description: "不要假设 Audio HAL 一定走 AIDL"
+    detail: |
+      HalVersionManager 在运行时检测，旧设备（Android 12 及以下）走 HIDL 2.0/2.1，
+      Android 13+ 才普遍迁移到 AIDL。车机 OEM 可能因芯片供应商的 Audio HAL 还是 HIDL
+      而锁定在 HIDL 路径。遇到 Audio Session 问题先看 `HalVersionManager::GetHalVersion()`
+      的日志确认当前路径，再找对应的 client_interface_hidl 或 client_interface_aidl。
+
+  - description: "不要把 setActiveDevice 误解为直接切音频"
+    detail: |
+      setActiveDevice 只是通知 Profile Service 更新"当前活跃设备"记录，
+      真正的音频切换发生在 AudioPolicyManager 收到 AudioDeviceCallback 回调后重路由时。
+      这两步之间有异步间隔（通常 50-200ms），在日志中能看到 setActiveDevice 先打印，
+      AudioPolicyManager onAudioPortChanged 后打印。
+
+  - description: "车机多手机接入时 ActiveDeviceManager 只有一套 Active Device"
+    detail: |
+      AOSP 的 ActiveDeviceManager 每个 Profile（A2DP/HFP/LE Audio）只维护一个 Active Device。
+      车机同时连两部手机时，只有一部是 A2DP Active（音乐），另一部会"静默"在连接态。
+      OEM 如果要实现"双手机都能接电话"，需要扩展 ActiveDeviceManager 的仲裁逻辑（属于 OEM 定制，
+      不是 AOSP 标准行为）。
+
+  - description: "不要在没有 Audio HAL Provider 的环境（如模拟器）调试音频路由"
+    detail: |
+      BluetoothAudioClientInterface::StartSession() 依赖 IBluetoothAudioProvider AIDL 服务，
+      模拟器上通常没有这个 HAL 实现，StartSession 会返回 -EINVAL。
+      在真机上调试时注意：OEM 的 Audio HAL 可能对某些 AudioConfiguration（如 LC3 offload）
+      返回 EX_ILLEGAL_ARGUMENT，需要先用 GetAudioCapabilities 确认支持的配置。
+
+cross_links:
+  - target: "../16_音频路由与AudioHAL/16.2_Offload路径.md"
+    anchor_text: "A2DP / HFP / LE Audio 三种 Offload 路径详见 16.2"
+
+  - target: "../16_音频路由与AudioHAL/16.3_STREAM类型与音量.md"
+    anchor_text: "STREAM_MUSIC / SCO / VOICE_CALL 类型与音量管理详见 16.3"
+
+  - target: "../16_音频路由与AudioHAL/16.4_音频延迟.md"
+    anchor_text: "A2DP buffer / HFP SCO / LE Audio Presentation Delay 详见 16.4"
+
+  - target: "../17_多设备共存与策略/17.1_ActiveDeviceManager深度.md"
+    anchor_text: "ActiveDeviceManager 多设备仲裁全流程详见 17.1"
+
+  - target: "../12_LE_Audio/12.1_LE_Audio_全景.md"
+    anchor_text: "LE Audio 音频路由的起点详见 12.1"
